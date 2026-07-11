@@ -41,11 +41,98 @@ void main() {
     });
     tearDown(() => cache.cleanup());
 
-    test('requires at least one domain', () {
+    test('requires seed domains or an allowDomain policy', () {
       expect(
         () => LetsEncryptTls(domains: [], cacheDir: cache.path),
         throwsA(isA<ValidationException>()),
       );
+    });
+
+    test('on-demand mode requires an email', () {
+      expect(
+        () => LetsEncryptTls(allowDomain: (_) => true, cacheDir: cache.path),
+        throwsA(isA<ValidationException>()),
+      );
+    });
+
+    group('dynamic / on-demand domains', () {
+      late LetsEncryptTls tls;
+      setUp(() {
+        tls = LetsEncryptTls.onDemand(
+          email: 'ops@example.com',
+          allowDomain: (host) => host.endsWith('.example.com'),
+          cacheDir: cache.path,
+        );
+      });
+
+      test('supports SNI and reports on-demand', () {
+        expect(tls.isOnDemand, isTrue);
+        expect(tls.supportsSni, isTrue);
+      });
+
+      test(
+        'accepts an async per-host email resolver instead of a fixed email',
+        () {
+          final resolved = LetsEncryptTls.onDemand(
+            allowDomain: (host) => host.endsWith('.example.com'),
+            emailResolver: (host) async => 'ops+$host@example.com',
+            cacheDir: cache.path,
+          );
+          expect(resolved.isOnDemand, isTrue);
+          expect(resolved.onDemandEmailResolver, isNotNull);
+        },
+      );
+
+      test('on-demand requires a fixed email or a resolver', () {
+        expect(
+          () => LetsEncryptTls.onDemand(
+            allowDomain: (_) => true,
+            cacheDir: cache.path,
+          ),
+          throwsA(isA<ValidationException>()),
+        );
+      });
+
+      test('policy allows matching hosts, rejects others', () {
+        expect(tls.isAllowed('foo.example.com'), isTrue);
+        expect(tls.isAllowed('BAR.example.com'), isTrue); // case-insensitive
+        expect(tls.isAllowed('evil.test'), isFalse);
+      });
+
+      test('seed domains are always allowed even without a policy match', () {
+        final seeded = LetsEncryptTls(
+          domains: [Domain(name: 'fixed.org', email: 'a@b.c')],
+          allowDomain: (host) => host.endsWith('.example.com'),
+          onDemandEmail: 'ops@example.com',
+          cacheDir: cache.path,
+        );
+        expect(seeded.isAllowed('fixed.org'), isTrue);
+        expect(seeded.isAllowed('x.example.com'), isTrue);
+        expect(seeded.isAllowed('other.net'), isFalse);
+      });
+
+      test(
+        'contextFor returns null for an uncached host and does not throw',
+        () {
+          // No certificate yet; the SNI resolver returns the (null) default and
+          // schedules background provisioning without blocking the handshake.
+          expect(tls.contextFor('foo.example.com'), isNull);
+          expect(tls.defaultContext, isNull);
+        },
+      );
+
+      test('obtain rejects a disallowed host without provisioning', () async {
+        expect(await tls.obtain('evil.test'), isFalse);
+      });
+
+      test('a single fixed domain does not use SNI', () {
+        final single = LetsEncryptTls.forDomain(
+          'only.example.com',
+          'ops@example.com',
+          cacheDir: cache.path,
+        );
+        expect(single.supportsSni, isFalse);
+      });
     });
 
     test('securityContext throws before provisioning', () {

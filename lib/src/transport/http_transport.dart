@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:multi_domain_secure_server/multi_domain_secure_server.dart';
 import 'package:shelf/shelf.dart' as shelf;
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_web_socket/shelf_web_socket.dart';
@@ -32,6 +33,7 @@ class HttpTransport implements Transport {
   final bool _secure;
 
   HttpServer? _server;
+  MultiDomainSecureServer? _sniServer;
   HubRequestHandler? _onRequest;
   ConnectionHandler? _onUpgrade;
 
@@ -80,18 +82,46 @@ class HttpTransport implements Transport {
     _onRequest = onRequest;
     _onUpgrade = onUpgrade;
 
-    final securityContext = _secure ? tls!.securityContext() : null;
+    final provider = tls;
+    final SniTlsProvider? sni = (_secure && provider is SniTlsProvider)
+        ? provider as SniTlsProvider
+        : null;
     try {
-      _server = await shelf_io.serve(
-        _handle,
-        address,
-        _requestedPort,
-        securityContext: securityContext,
-        shared: true,
-      );
+      if (sni != null && sni.supportsSni) {
+        await _bindSni(sni);
+      } else {
+        _server = await shelf_io.serve(
+          _handle,
+          address,
+          _requestedPort,
+          securityContext: _secure ? provider!.securityContext() : null,
+          shared: true,
+        );
+      }
+    } on TransportException {
+      rethrow;
     } on Object catch (e) {
       throw TransportException('Failed to bind ${protocol.name}: $e');
     }
+  }
+
+  /// Binds an SNI-aware TLS listener that selects (and may provision on demand)
+  /// a certificate per requested host via [SniTlsProvider.contextFor].
+  Future<void> _bindSni(SniTlsProvider provider) async {
+    final defaultContext = provider.defaultContext;
+    final sniServer = await MultiDomainSecureServer.bind(
+      address,
+      _requestedPort,
+      shared: true,
+      // Require SNI only when there is no default certificate to fall back to.
+      requiresHandshakesWithHostname: defaultContext == null,
+      defaultSecureContext: defaultContext,
+      securityContextResolver: provider.contextFor,
+    );
+    final httpServer = sniServer.asHttpServer();
+    shelf_io.serveRequests(httpServer, _handle);
+    _sniServer = sniServer;
+    _server = httpServer;
   }
 
   /// Rebinds the listener with a freshly built [SecurityContext] (used when an
@@ -107,8 +137,11 @@ class HttpTransport implements Transport {
   @override
   Future<void> close({bool force = false}) async {
     final server = _server;
+    final sniServer = _sniServer;
     _server = null;
+    _sniServer = null;
     if (server != null) await server.close(force: force);
+    if (sniServer != null) await sniServer.close();
   }
 
   Future<shelf.Response> _handle(shelf.Request request) async {

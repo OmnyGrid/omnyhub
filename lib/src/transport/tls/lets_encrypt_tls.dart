@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:shelf/shelf.dart' as shelf;
@@ -9,6 +10,13 @@ import '../../http/hub_response.dart';
 import '../../shared/errors/hub_exception.dart';
 import 'tls_provider.dart';
 
+/// Decides whether an on-demand certificate may be requested for [host].
+typedef DomainPolicy = bool Function(String host);
+
+/// Resolves the ACME contact email to use for an on-demand certificate for
+/// [host]. May be asynchronous (e.g. a database lookup per tenant).
+typedef EmailResolver = FutureOr<String> Function(String host);
+
 /// A [TlsProvider] that provisions and renews certificates automatically via
 /// Let's Encrypt (ACME HTTP-01), backed by `package:shelf_letsencrypt`.
 ///
@@ -17,21 +25,47 @@ import 'tls_provider.dart';
 ///
 /// * [challengeMiddleware] — the hub mounts this first on its plaintext (port
 ///   80) transport so the ACME CA's HTTP-01 validation requests are answered;
-/// * [provision] — requests certificates for any domain that lacks a valid one
-///   (the validation traffic hits the challenge middleware), then builds the
-///   [SecurityContext];
-/// * [maybeRenew] — renews certificates near expiry and reports whether the
-///   context changed so the hub can rebind the HTTPS listener (hot reload).
+/// * [provision] — requests certificates for any seed [domains] that lack a
+///   valid one, then builds their [SecurityContext]s;
+/// * [contextFor] — the SNI resolver: returns the certificate for a requested
+///   host, and (in on-demand mode) kicks off provisioning for allowed hosts it
+///   does not yet have;
+/// * [maybeRenew] — renews certificates near expiry.
+///
+/// ## Dynamic / on-demand domains
+///
+/// Passing an [allowDomain] policy (plus an [onDemandEmail]) enables **on-demand
+/// issuance**: any host the policy allows gets a certificate provisioned the
+/// first time it is seen, without the developer listing it in code. Because
+/// certificates are served via SNI from a live cache, `foo.example.com` and
+/// `bar.example.com` "just work" as they start being used:
+///
+/// ```dart
+/// final tls = LetsEncryptTls(
+///   onDemandEmail: 'ops@example.com',
+///   allowDomain: (host) => host.endsWith('.example.com'),
+///   cacheDir: '/var/lib/omnyhub/certs',
+///   production: true,
+/// );
+/// final hub = OmnyHub(transports: [
+///   HttpTransport.http(port: 80),                 // ACME HTTP-01 challenges
+///   HttpTransport.https(port: 443, tls: tls),     // SNI, on-demand certs
+/// ]);
+/// ```
+///
+/// The first TLS handshake for an allowed, not-yet-provisioned host triggers
+/// background issuance (validated via the challenge on port 80); the certificate
+/// is served on the next connection. You can also pre-provision a host at any
+/// time with [obtain] (e.g. at tenant sign-up).
 ///
 /// > **Ports:** ACME HTTP-01 requires a reachable **port 80**; add an
-/// > `HttpTransport.http(port: 80)` to the hub. The self-checks during renewal
-/// > use [securePort].
+/// > `HttpTransport.http(port: 80)`. Renewal self-checks use [securePort].
 /// >
 /// > **Staging vs production:** [production] defaults to `false` (Let's Encrypt
 /// > *staging*, whose certificates are browser-invalid but avoid the strict
 /// > production rate limits). Set it to `true` only once issuance works.
-class LetsEncryptTls implements TlsProvider {
-  /// The domains to provision certificates for.
+class LetsEncryptTls implements TlsProvider, SniTlsProvider {
+  /// Seed domains provisioned up front on [provision].
   final List<Domain> domains;
 
   /// The directory where account keys and certificates are cached.
@@ -43,29 +77,64 @@ class LetsEncryptTls implements TlsProvider {
   /// The public HTTPS port, used by renewal self-checks.
   final int securePort;
 
+  /// Policy allowing on-demand certificates for hosts it returns `true` for.
+  /// `null` disables on-demand issuance (only [domains] are served).
+  final DomainPolicy? allowDomain;
+
+  /// The fixed contact email used for on-demand certificates. `null` when an
+  /// [onDemandEmailResolver] is supplied instead.
+  final String? onDemandEmail;
+
+  /// Resolves the contact email per host for on-demand certificates, allowing a
+  /// different email for each domain. Takes precedence over [onDemandEmail].
+  final EmailResolver? onDemandEmailResolver;
+
   final CertificatesHandlerIO _certificates;
   final LetsEncrypt _letsEncrypt;
-  SecurityContext? _context;
+  final Map<String, SecurityContext> _contexts = {};
+  final Map<String, Future<bool>> _inFlight = {};
+  SecurityContext? _default;
 
   LetsEncryptTls._(
     this.domains,
     this.cacheDir,
     this.production,
     this.securePort,
+    this.allowDomain,
+    this.onDemandEmail,
+    this.onDemandEmailResolver,
     this._certificates,
     this._letsEncrypt,
   );
 
-  /// Creates an ACME provider for [domains], caching material under [cacheDir].
+  /// Creates an ACME provider.
+  ///
+  /// Provide seed [domains] (provisioned on start), an [allowDomain] policy for
+  /// on-demand issuance, or both. On-demand issuance requires a contact email:
+  /// a fixed [onDemandEmail], or an [onDemandEmailResolver] to resolve it per
+  /// host (e.g. a per-tenant lookup).
   factory LetsEncryptTls({
-    required List<Domain> domains,
+    List<Domain> domains = const [],
+    DomainPolicy? allowDomain,
+    String? onDemandEmail,
+    EmailResolver? onDemandEmailResolver,
     required String cacheDir,
     bool production = false,
     int challengePort = 80,
     int securePort = 443,
   }) {
-    if (domains.isEmpty) {
-      throw const ValidationException('At least one domain is required');
+    if (domains.isEmpty && allowDomain == null) {
+      throw const ValidationException(
+        'Provide seed domains and/or an allowDomain policy',
+      );
+    }
+    if (allowDomain != null &&
+        (onDemandEmail == null || onDemandEmail.isEmpty) &&
+        onDemandEmailResolver == null) {
+      throw const ValidationException(
+        'onDemandEmail or onDemandEmailResolver is required when '
+        'allowDomain is set',
+      );
     }
     final certificates = CertificatesHandlerIO(Directory(cacheDir));
     final letsEncrypt = LetsEncrypt(
@@ -79,12 +148,15 @@ class LetsEncryptTls implements TlsProvider {
       cacheDir,
       production,
       securePort,
+      allowDomain,
+      onDemandEmail,
+      onDemandEmailResolver,
       certificates,
       letsEncrypt,
     );
   }
 
-  /// Convenience constructor for a single [domain]/[email].
+  /// Convenience constructor for a single fixed [domain]/[email].
   factory LetsEncryptTls.forDomain(
     String domain,
     String email, {
@@ -100,9 +172,67 @@ class LetsEncryptTls implements TlsProvider {
     securePort: securePort,
   );
 
+  /// Convenience constructor for on-demand issuance of any host matching
+  /// [allowDomain].
+  ///
+  /// Supply a fixed [email], or an [emailResolver] to choose the contact address
+  /// per host (e.g. a different email for each tenant domain); exactly one is
+  /// required.
+  factory LetsEncryptTls.onDemand({
+    required DomainPolicy allowDomain,
+    required String cacheDir,
+    String? email,
+    EmailResolver? emailResolver,
+    List<Domain> domains = const [],
+    bool production = false,
+    int challengePort = 80,
+    int securePort = 443,
+  }) => LetsEncryptTls(
+    domains: domains,
+    allowDomain: allowDomain,
+    onDemandEmail: email,
+    onDemandEmailResolver: emailResolver,
+    cacheDir: cacheDir,
+    production: production,
+    challengePort: challengePort,
+    securePort: securePort,
+  );
+
+  /// Whether on-demand issuance is enabled.
+  bool get isOnDemand => allowDomain != null;
+
+  /// Whether [host] may be served (a seed domain or allowed by the policy).
+  bool isAllowed(String host) {
+    final normalized = host.toLowerCase();
+    if (domains.any((d) => d.name.toLowerCase() == normalized)) return true;
+    final policy = allowDomain;
+    return policy != null && policy(normalized);
+  }
+
+  @override
+  bool get supportsSni => isOnDemand || domains.length > 1;
+
+  @override
+  SecurityContext? get defaultContext => _default;
+
+  @override
+  SecurityContext? contextFor(String? host) {
+    if (host == null) return _default;
+    final normalized = host.toLowerCase();
+    final cached = _contexts[normalized];
+    if (cached != null) return cached;
+    // Unknown but allowed host: provision in the background for next time.
+    // Swallow errors here (e.g. a throwing email resolver) so they never
+    // surface as an unhandled async error during a TLS handshake.
+    if (isAllowed(normalized) && !_inFlight.containsKey(normalized)) {
+      unawaited(obtain(normalized).catchError((Object _) => false));
+    }
+    return _default;
+  }
+
   @override
   SecurityContext securityContext() {
-    final context = _context;
+    final context = _default;
     if (context == null) {
       throw const TlsException(
         'TLS certificate not provisioned yet; call provision() first',
@@ -131,50 +261,96 @@ class LetsEncryptTls implements TlsProvider {
         return inner(request);
       };
 
+  /// Ensures a certificate exists for [host] (provisioning it if allowed and
+  /// missing) and caches its [SecurityContext]. Returns whether a certificate is
+  /// available afterwards. Concurrent calls for the same host are de-duplicated.
+  Future<bool> obtain(String host) {
+    final normalized = host.toLowerCase();
+    if (_contexts.containsKey(normalized)) return Future.value(true);
+    if (!isAllowed(normalized)) return Future.value(false);
+    final existing = _inFlight[normalized];
+    if (existing != null) return existing;
+    final future = _provisionHost(normalized);
+    _inFlight[normalized] = future;
+    return future.whenComplete(() => _inFlight.remove(normalized));
+  }
+
   @override
   Future<void> provision() async {
     for (final domain in domains) {
-      if (!_certificates.isHandledDomainCertificate(domain.name)) {
-        final ok = await _letsEncrypt.requestCertificate(domain);
-        if (!ok) {
-          throw TlsException(
-            'Failed to provision certificate for ${domain.name}',
-          );
-        }
+      final ok = await obtain(domain.name);
+      if (!ok) {
+        throw TlsException(
+          'Failed to provision certificate for ${domain.name}',
+        );
       }
     }
-    await _loadContext();
   }
 
   @override
   Future<bool> maybeRenew() async {
     var refreshed = false;
-    for (final domain in domains) {
+    final hosts = <String>{
+      ...domains.map((d) => d.name.toLowerCase()),
+      ..._contexts.keys,
+    };
+    for (final host in hosts) {
       final status = await _letsEncrypt.checkCertificate(
-        domain,
+        await _domainFor(host),
         requestCertificate: true,
       );
-      if (status.isOkRefreshed) refreshed = true;
+      if (status.isOkRefreshed) {
+        final context = await _buildContextFor(host);
+        if (context != null) {
+          _contexts[host] = context;
+          refreshed = true;
+        }
+      }
     }
-    if (refreshed) await _loadContext();
-    return refreshed;
+    // SNI serves from the live cache, so an updated context is picked up on the
+    // next handshake without rebinding; only the single-context path needs the
+    // hub to rebind.
+    return refreshed && !supportsSni;
   }
 
-  Future<void> _loadContext() async {
-    final contexts = await _certificates.buildSecurityContexts(
-      domains,
-      allowUnresolvedDomain: true,
-      loadAllHandledDomains: true,
-    );
-    if (contexts == null || contexts.isEmpty) {
-      throw TlsException(
-        'No certificates available for '
-        '${domains.map((d) => d.name).join(', ')}',
-      );
+  Future<bool> _provisionHost(String host) async {
+    final domain = await _domainFor(host);
+    if (!_certificates.isHandledDomainCertificate(host)) {
+      final ok = await _letsEncrypt.requestCertificate(domain);
+      if (!ok) return false;
     }
-    // Bind with the first domain's context. Multi-domain SNI selection is a
-    // documented future enhancement.
-    _context = contexts.values.first;
+    final context = await _buildContextFor(host);
+    if (context == null) return false;
+    _contexts[host] = context;
+    _default ??= context;
+    return true;
+  }
+
+  Future<SecurityContext?> _buildContextFor(String host) async {
+    final contexts = await _certificates.buildSecurityContexts(
+      [await _domainFor(host)],
+      allowUnresolvedDomain: true,
+      loadAllHandledDomains: false,
+    );
+    if (contexts == null || contexts.isEmpty) return null;
+    return contexts[host] ?? contexts.values.first;
+  }
+
+  Future<Domain> _domainFor(String host) async {
+    for (final domain in domains) {
+      if (domain.name.toLowerCase() == host) return domain;
+    }
+    return Domain(name: host, email: await _emailFor(host));
+  }
+
+  Future<String> _emailFor(String host) async {
+    final resolver = onDemandEmailResolver;
+    if (resolver != null) return resolver(host);
+    final email = onDemandEmail;
+    if (email != null) return email;
+    // Only reachable for a seed host with no on-demand email; fall back to the
+    // first seed domain's email.
+    return domains.first.email;
   }
 
   shelf.Request _toShelf(HubRequest request) =>

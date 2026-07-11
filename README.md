@@ -61,7 +61,9 @@ See the full API docs at [pub.dev/documentation/omnyhub][api_doc].
   are the same mechanism.
 - **Automatic TLS.** Static certificates or automatic Let's Encrypt (ACME
   HTTP-01) provisioning and renewal with hot-reload, behind a single
-  `TlsProvider` port.
+  `TlsProvider` port — including **dynamic, on-demand multi-domain** issuance via
+  SNI, so `foo.example.com`, `bar.example.com`, … are provisioned as they are
+  first used, with no code change per domain.
 - **Node infrastructure.** A generic control plane for node registration,
   discovery (by capability/label), authentication, capabilities, metadata,
   health monitoring, lifecycle and RPC — with reconnection and backoff.
@@ -165,7 +167,7 @@ final hub = OmnyHub(
 );
 ```
 
-**Automatic TLS:**
+**Automatic TLS** (fixed domains):
 
 ```dart
 final hub = OmnyHub(transports: [
@@ -176,6 +178,23 @@ final hub = OmnyHub(transports: [
     production: true,
   )),
 ]);
+```
+
+**Dynamic / on-demand TLS** (any allowed host, provisioned on first use, served
+via SNI):
+
+```dart
+final hub = OmnyHub(transports: [
+  HttpTransport.http(port: 80),
+  HttpTransport.https(port: 443, tls: LetsEncryptTls.onDemand(
+    email: 'ops@example.com',
+    allowDomain: (host) => host.endsWith('.example.com'),
+    cacheDir: '/var/lib/omnyhub/certs',
+    production: true,
+  )),
+]);
+// foo.example.com and bar.example.com now get certificates automatically.
+// (Clients must send SNI — all modern browsers do.)
 ```
 
 **Nodes** (control plane):

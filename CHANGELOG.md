@@ -1,3 +1,27 @@
+## 0.2.0
+
+### Added
+
+- **Dynamic / on-demand Let's Encrypt domains.** `LetsEncryptTls` now accepts an
+  `allowDomain` policy (via `LetsEncryptTls.onDemand(...)` or the main
+  constructor) to provision certificates for any allowed host on demand, served
+  via SNI from a live per-host cache — so `foo.example.com`, `bar.example.com`, …
+  work without listing each domain in code. New `obtain(host)`, `isAllowed(host)`
+  and `isOnDemand` APIs. The ACME contact email may be a fixed `onDemandEmail`
+  or resolved per host with an async `onDemandEmailResolver` (e.g. a per-tenant
+  lookup).
+- **SNI transport binding.** `HttpTransport` serves multiple certificates on one
+  TLS listener via SNI when its TLS provider implements the new `SniTlsProvider`
+  capability; a certificate obtained on demand is served on the next handshake
+  with no rebind. Clients must send SNI (all modern browsers do).
+- `HandlerService.handlesWebSocket` getter and expanded WebSocket docs.
+- New `example/lets_encrypt_example.dart` (fixed and `--on-demand` modes).
+
+### Changed
+
+- `LetsEncryptTls` requires seed `domains` and/or an `allowDomain` policy;
+  `allowDomain` requires an `onDemandEmail`.
+
 ## 0.1.0
 
 - **Initial release of OmnyHub** — a reusable, protocol-agnostic HUB framework.
