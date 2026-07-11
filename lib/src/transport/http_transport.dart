@@ -81,19 +81,22 @@ class HttpTransport implements Transport {
     }
     _onRequest = onRequest;
     _onUpgrade = onUpgrade;
+    await _bindOn(_requestedPort);
+  }
 
+  Future<void> _bindOn(int port) async {
     final provider = tls;
     final SniTlsProvider? sni = (_secure && provider is SniTlsProvider)
         ? provider as SniTlsProvider
         : null;
     try {
       if (sni != null && sni.supportsSni) {
-        await _bindSni(sni);
+        await _bindSni(sni, port);
       } else {
         _server = await shelf_io.serve(
           _handle,
           address,
-          _requestedPort,
+          port,
           securityContext: _secure ? provider!.securityContext() : null,
           shared: true,
         );
@@ -107,11 +110,11 @@ class HttpTransport implements Transport {
 
   /// Binds an SNI-aware TLS listener that selects (and may provision on demand)
   /// a certificate per requested host via [SniTlsProvider.contextFor].
-  Future<void> _bindSni(SniTlsProvider provider) async {
+  Future<void> _bindSni(SniTlsProvider provider, int port) async {
     final defaultContext = provider.defaultContext;
     final sniServer = await MultiDomainSecureServer.bind(
       address,
-      _requestedPort,
+      port,
       shared: true,
       // Require SNI only when there is no default certificate to fall back to.
       requiresHandshakesWithHostname: defaultContext == null,
@@ -124,14 +127,22 @@ class HttpTransport implements Transport {
     _server = httpServer;
   }
 
-  /// Rebinds the listener with a freshly built [SecurityContext] (used when an
-  /// ACME certificate is renewed). The previous listener is drained first.
+  /// Rebinds the listener with a freshly built [SecurityContext] (used when a
+  /// certificate is renewed) **without dropping live connections**: a fresh
+  /// `shared` listener is bound on the same port with the new certificate, then
+  /// the old listener is drained gracefully (`force: false`) so in-flight
+  /// connections finish on the old certificate while new ones use the renewed
+  /// one.
   Future<void> rebind() async {
-    final onRequest = _onRequest;
-    if (onRequest == null) return;
-    final onUpgrade = _onUpgrade;
-    await close(force: true);
-    await bind(onRequest: onRequest, onUpgrade: onUpgrade);
+    if (_server == null || _onRequest == null) return;
+    final port = _server!.port;
+    final oldServer = _server;
+    final oldSni = _sniServer;
+    _server = null;
+    _sniServer = null;
+    await _bindOn(port);
+    if (oldServer != null) unawaited(oldServer.close(force: false));
+    if (oldSni != null) unawaited(oldSni.close());
   }
 
   @override

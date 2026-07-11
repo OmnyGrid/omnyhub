@@ -31,6 +31,7 @@ export 'src/shared/version.dart';
 
 // Core.
 export 'src/core/connection.dart';
+export 'src/core/connection_codec.dart';
 export 'src/core/message.dart';
 export 'src/core/principal.dart';
 export 'src/core/transport_protocol.dart';

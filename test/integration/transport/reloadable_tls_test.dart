@@ -10,71 +10,95 @@ import 'package:test/test.dart';
 
 import '../../support/temp_dir.dart';
 
+/// Echoes WebSocket text frames, prefixing with `ws:`.
+void wsEcho(Connection conn, HubRequest req) {
+  conn.incoming.listen((m) {
+    if (m is TextMessage) conn.send(TextMessage('ws:${m.data}'));
+  });
+}
+
 void main() {
-  test('reloads the certificate when the files change and rebinds', () async {
+  test('reloads when file contents change (byte-compare)', () async {
     final dir = await TempDir.create();
     addTearDown(dir.cleanup);
     final certPath = dir.resolve('cert.pem');
     final keyPath = dir.resolve('key.pem');
-    await File('test/support/certs/localhost.crt').copy(certPath);
-    await File('test/support/certs/localhost.key').copy(keyPath);
+    final certBytes = File(
+      'test/support/certs/localhost.crt',
+    ).readAsBytesSync();
+    final keyBytes = File('test/support/certs/localhost.key').readAsBytesSync();
+    File(certPath).writeAsBytesSync(certBytes);
+    File(keyPath).writeAsBytesSync(keyBytes);
 
     final tls = ReloadableFileTls.files(certPath, keyPath);
-    final hub = OmnyHub(
-      transports: [
-        HttpTransport.https(address: '127.0.0.1', port: 0, tls: tls),
-      ],
-      tlsRenewalInterval: Duration.zero, // drive renewal manually
-    );
-    await hub.registerService(
-      HandlerService(
-        name: 'root',
-        handler: (_) async => HubResponse.text('ok'),
-      ),
-    );
-    await hub.start();
-    addTearDown(hub.stop);
+    expect(tls.hotReloadable, isTrue);
 
-    IOClient client() =>
-        IOClient(HttpClient()..badCertificateCallback = (_, _, _) => true);
-
-    final before = client();
-    final r1 = await before.get(
-      Uri.parse('https://127.0.0.1:${hub.transports.first.port}/'),
-    );
-    expect(r1.body, 'ok');
-    before.close();
-
-    // No change yet => no rebind.
+    // No content change => no reload.
     expect(await tls.maybeRenew(), isFalse);
 
-    // Simulate a cert-manager rotating the files (mtime bumps) and renew.
-    final newer = DateTime.now().add(const Duration(seconds: 2));
-    File(certPath).setLastModifiedSync(newer);
-    File(keyPath).setLastModifiedSync(newer);
+    // A cert-manager rewrites the cert (a leading PEM comment => new bytes,
+    // still parseable). Byte-compare detects it even at the same size class.
+    File(certPath).writeAsBytesSync([...'# renewed\n'.codeUnits, ...certBytes]);
     expect(await tls.maybeRenew(), isTrue);
-
-    await hub.renewTls();
-
-    final after = client();
-    final r2 = await after.get(
-      Uri.parse('https://127.0.0.1:${hub.transports.first.port}/'),
-    );
-    expect(r2.statusCode, 200);
-    after.close();
+    // Idempotent afterwards.
+    expect(await tls.maybeRenew(), isFalse);
   });
 
   test('directory layout resolves fullchain/privkey', () async {
     final dir = await TempDir.create();
     addTearDown(dir.cleanup);
-    await File(
+    File(
       'test/support/certs/localhost.crt',
-    ).copy(dir.resolve('fullchain.pem'));
-    await File(
+    ).copySync(dir.resolve('fullchain.pem'));
+    File(
       'test/support/certs/localhost.key',
-    ).copy(dir.resolve('privkey.pem'));
+    ).copySync(dir.resolve('privkey.pem'));
     final tls = ReloadableFileTls.directory(dir.path);
     expect(tls.securityContext(), isNotNull);
-    expect(tls.hotReloadable, isTrue);
   });
+
+  test(
+    'gap-free rebind keeps a live connection alive and the port stable',
+    () async {
+      final tls = StaticTls.files(
+        'test/support/certs/localhost.crt',
+        'test/support/certs/localhost.key',
+      );
+      final transport = HttpTransport.https(
+        address: '127.0.0.1',
+        port: 0,
+        tls: tls,
+      );
+      await transport.bind(
+        onRequest: (_) async => HubResponse.text('ok'),
+        onUpgrade: wsEcho,
+      );
+      addTearDown(() => transport.close(force: true));
+      final port = transport.port;
+
+      // Open a live WSS connection before the swap.
+      final live = await WebSocketConnection.connect(
+        Uri.parse('wss://127.0.0.1:$port/ws'),
+        onBadCertificate: (_, _, _) => true,
+      );
+
+      // Renew: bind a fresh shared listener on the same port, drain the old.
+      await transport.rebind();
+      expect(transport.port, port); // same port, no gap
+
+      // The pre-existing connection still works (drained gracefully).
+      final echoed = live.incoming.first;
+      live.send(const TextMessage('alive'));
+      expect(await echoed, const TextMessage('ws:alive'));
+      await live.close();
+
+      // New connections work on the renewed listener.
+      final client = IOClient(
+        HttpClient()..badCertificateCallback = (_, _, _) => true,
+      );
+      addTearDown(client.close);
+      final res = await client.get(Uri.parse('https://127.0.0.1:$port/'));
+      expect(res.body, 'ok');
+    },
+  );
 }
