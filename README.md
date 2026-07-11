@@ -241,7 +241,8 @@ See [`example/`](example/):
 |---|---|
 | [service_hosting_example.dart](example/service_hosting_example.dart) | Multiple services (HTTP + WS) on one port; dynamic add/remove. |
 | [reverse_proxy_example.dart](example/reverse_proxy_example.dart) | Path- and host-based proxying + a local service (hybrid). |
-| [auto_tls_example.dart](example/auto_tls_example.dart) | HTTPS with a static cert; configuring Let's Encrypt. |
+| [auto_tls_example.dart](example/auto_tls_example.dart) | HTTPS with a static cert; a Let's Encrypt config sketch. |
+| [lets_encrypt_example.dart](example/lets_encrypt_example.dart) | Full automatic-TLS HTTPS via Let's Encrypt (ACME); dry-run by default. |
 | [node_example.dart](example/node_example.dart) | A node registering, discovery, heartbeats and RPC. |
 
 ## Running the tests

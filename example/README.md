@@ -7,7 +7,8 @@ a scenario, prints the results, and shuts everything down.
 |---|---|
 | [`service_hosting_example.dart`](service_hosting_example.dart) | Hosting multiple services (HTTP + WebSocket) on one port, with dynamic add/remove. |
 | [`reverse_proxy_example.dart`](reverse_proxy_example.dart) | Path- and host-based reverse proxying to a backend, mixed with a local service (hybrid). |
-| [`auto_tls_example.dart`](auto_tls_example.dart) | Serving HTTPS with a static certificate; configuring automatic Let's Encrypt TLS. |
+| [`auto_tls_example.dart`](auto_tls_example.dart) | Serving HTTPS with a static certificate (runnable); a Let's Encrypt config sketch. |
+| [`lets_encrypt_example.dart`](lets_encrypt_example.dart) | A full automatic-TLS HTTPS server via Let's Encrypt (ACME). Dry-run by default; `--run` on a real host. |
 | [`node_example.dart`](node_example.dart) | A worker node registering with a hub, discovery, heartbeats and an RPC. |
 
 Run any example with:
