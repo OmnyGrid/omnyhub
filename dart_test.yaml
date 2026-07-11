@@ -1,0 +1,8 @@
+# Declares custom test tags.
+tags:
+  # The `version` tag marks the test asserting omnyHubVersion matches
+  # pubspec.yaml (test/unit/shared/version_test.dart).
+  version:
+  # The `tls` tag marks tests that exercise real TLS listeners using the
+  # committed self-signed fixtures under test/support/certs/.
+  tls:
