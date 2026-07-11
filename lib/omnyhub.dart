@@ -44,6 +44,7 @@ export 'src/http/hub_response.dart';
 // Transport.
 export 'src/transport/http_transport.dart';
 export 'src/transport/tls/lets_encrypt_tls.dart';
+export 'src/transport/tls/reloadable_file_tls.dart';
 export 'src/transport/tls/static_tls.dart';
 export 'src/transport/tls/tls_provider.dart' show TlsProvider, SniTlsProvider;
 export 'src/transport/transport.dart';
@@ -53,12 +54,18 @@ export 'package:shelf_letsencrypt/shelf_letsencrypt.dart'
     show Domain, CheckCertificateStatus;
 
 // Auth.
+export 'src/auth/auth_coordinator.dart';
 export 'src/auth/authenticator.dart';
 export 'src/auth/authorizer.dart';
 export 'src/auth/basic_authenticator.dart';
+export 'src/auth/connection_authenticator.dart';
 export 'src/auth/token_authenticator.dart';
 
+// Core (connection handshake helper).
+export 'src/core/handshake_connection.dart';
+
 // Routing.
+export 'src/routing/path_pattern.dart';
 export 'src/routing/route.dart';
 export 'src/routing/route_context.dart';
 export 'src/routing/route_rule.dart';
@@ -66,8 +73,10 @@ export 'src/routing/rules.dart';
 
 // Services.
 export 'src/service/handler_service.dart';
+export 'src/service/router_service.dart';
 export 'src/service/service.dart';
 export 'src/service/service_registry.dart';
+export 'src/service/shelf_service.dart';
 
 // Reverse proxy.
 export 'src/proxy/proxy_service.dart';

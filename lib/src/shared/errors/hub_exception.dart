@@ -68,6 +68,18 @@ class ForbiddenException extends HubException {
     : super(code: ErrorCodes.forbidden, message: message, statusCode: 403);
 }
 
+/// The caller has sent too many requests, or a pre-check flagged the request as
+/// abusive/suspicious (rate limiting, throttling).
+class TooManyRequestsException extends HubException {
+  /// Creates a too-many-requests failure; defaults to a generic [message].
+  const TooManyRequestsException([String message = 'Too many requests'])
+    : super(
+        code: ErrorCodes.tooManyRequests,
+        message: message,
+        statusCode: 429,
+      );
+}
+
 /// No route matched the request, or route resolution failed.
 class RoutingException extends HubException {
   /// Creates a routing failure with [message] and an optional specific [code].

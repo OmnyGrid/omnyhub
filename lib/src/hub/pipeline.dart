@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import '../http/handler.dart';
 import '../http/hub_request.dart';
 import '../http/hub_response.dart';
@@ -42,6 +44,44 @@ Middleware errorMapper({Logger logger = const NoopLogger()}) {
     };
   };
 }
+
+/// Middleware that maps errors thrown by inner handlers to responses via [map]
+/// — the seam for translating an application's own exception hierarchy into
+/// [HubResponse]s.
+///
+/// [map] returns a [HubResponse] to use, or `null` to rethrow (letting the
+/// hub's built-in [errorMapper] handle it — e.g. framework [HubException]s).
+/// Place this in the hub's user-middleware layer (it runs inside [errorMapper]).
+Middleware mapErrors(
+  FutureOr<HubResponse?> Function(Object error, StackTrace stackTrace) map,
+) {
+  return (HubRequestHandler inner) {
+    return (HubRequest request) async {
+      try {
+        return await inner(request);
+      } on Object catch (e, s) {
+        final mapped = await map(e, s);
+        if (mapped != null) return mapped;
+        rethrow;
+      }
+    };
+  };
+}
+
+/// Builds a `{"success": true, "data": ...}` JSON response — a common envelope
+/// for API services (e.g. omnydrive).
+HubResponse successEnvelope(Object? data, {int statusCode = 200}) =>
+    HubResponse.json({'success': true, 'data': data}, statusCode: statusCode);
+
+/// Builds a `{"success": false, "error": {"code", "message"}}` JSON response.
+HubResponse errorEnvelope(
+  String code,
+  String message, {
+  int statusCode = 400,
+}) => HubResponse.json({
+  'success': false,
+  'error': {'code': code, 'message': message},
+}, statusCode: statusCode);
 
 /// Middleware that logs one record per request with method, path, status and
 /// elapsed milliseconds. Timing uses [clock] for testability.

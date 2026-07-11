@@ -82,6 +82,36 @@ void main() {
       expect(SubdomainRule('api').matches(ctx()), isTrue);
       expect(SubdomainRule('www').matches(ctx()), isFalse);
     });
+
+    test('HostPatternRule matches a regexp over host/domain/subdomain', () {
+      expect(
+        HostPatternRule(RegExp(r'^api\.example\.com$')).matches(ctx()),
+        isTrue,
+      );
+      expect(HostPatternRule(RegExp(r'^(dev|stg)\.')).matches(ctx()), isFalse);
+      expect(
+        HostPatternRule(
+          RegExp(r'^example\.com$'),
+          part: HostPart.domain,
+        ).matches(ctx()),
+        isTrue,
+      );
+      expect(
+        HostPatternRule(
+          RegExp('^api\$'),
+          part: HostPart.subdomain,
+        ).matches(ctx()),
+        isTrue,
+      );
+    });
+
+    test('HostPatternRule combines with a path prefix', () {
+      final rule =
+          HostPatternRule(RegExp(r'\.example\.com$')) & PathRule('/api');
+      expect(rule.matches(ctx()), isTrue);
+      expect(rule.matches(ctx(url: 'http://api.example.com/other')), isFalse);
+      expect(rule.matches(ctx(url: 'http://api.other.com/api/x')), isFalse);
+    });
   });
 
   group('HeaderRule / ProtocolRule / MethodRule', () {

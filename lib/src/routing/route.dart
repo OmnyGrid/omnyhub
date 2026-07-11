@@ -1,8 +1,12 @@
+import '../auth/authenticator.dart';
+import '../auth/authorizer.dart';
+import '../auth/connection_authenticator.dart';
 import '../service/service.dart';
 import 'route_context.dart';
 import 'route_rule.dart';
 
-/// Binds a [RouteRule] to a target [Service], with a [priority] for ordering.
+/// Binds a [RouteRule] to a target [Service], with a [priority] for ordering and
+/// optional per-service authentication.
 class Route {
   /// A descriptive name (usually the target service's name).
   final String name;
@@ -18,12 +22,28 @@ class Route {
   /// order.
   final int priority;
 
+  /// The authenticator used for this route when the global coordinator delegates
+  /// (or, with no coordinator, in addition to the global one). `null` means no
+  /// per-service authenticator.
+  final Authenticator? authenticator;
+
+  /// The authorizer used for this route, overriding the hub-wide one. `null`
+  /// falls back to the hub's authorizer.
+  final Authorizer? authorizer;
+
+  /// The in-band connection authenticator for WebSocket upgrades to this route,
+  /// overriding the hub-wide one.
+  final ConnectionAuthenticator? connectionAuthenticator;
+
   /// Creates a route.
   Route({
     required this.name,
     required this.rule,
     required this.target,
     this.priority = 0,
+    this.authenticator,
+    this.authorizer,
+    this.connectionAuthenticator,
   });
 
   @override

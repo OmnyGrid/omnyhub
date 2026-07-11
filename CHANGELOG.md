@@ -1,3 +1,30 @@
+## 0.3.0
+
+### Added
+
+- **Path-parameter routing.** `PathPattern` (named `<param>` + wildcard tail
+  `<name|.*>`) and `RouterService` (intra-service method dispatch exposing
+  captured params, 405/404). `ShelfService` adapts an existing `shelf.Handler` /
+  `shelf_router.Router` verbatim.
+- **Layered authentication framework.** A global `AuthCoordinator` returning a
+  sealed `AuthDecision` (`Authenticated` / `Anonymous` bypass / `Delegate` to the
+  service's authenticator / `Blocked` pre-check), **per-service**
+  `authenticator`/`authorizer` on `registerService`/`route`, and
+  `TooManyRequestsException` (429). Fully backward-compatible
+  (`DefaultAuthCoordinator`).
+- **In-band connection authentication.** `ConnectionAuthenticator` + a
+  `HandshakeConnection` buffered wrapper so a WebSocket handshake can authenticate
+  and then hand the live connection to the service (single-subscription safe).
+- **Host/domain regexp routing.** `HostPatternRule(RegExp, {part})` matching the
+  host, domain or subdomain, combinable with a `PathRule` via `&`.
+- **`ReloadableFileTls`** — a `TlsProvider` that hot-reloads certificate/key files
+  when they change on disk (cert-manager/certbot friendly).
+- **Pipeline helpers** — `mapErrors` middleware (map app exceptions to responses)
+  and `successEnvelope`/`errorEnvelope` (`{success, data}` / `{success, error}`).
+- **`NodeRegistry` extras** — `RegisteredNode.activeSessions`/`connectionId`,
+  `NodeRegistry.byConnectionId`/`updateActiveSessions`.
+- Examples: `path_params_example.dart`, `layered_auth_example.dart`.
+
 ## 0.2.0
 
 ### Added

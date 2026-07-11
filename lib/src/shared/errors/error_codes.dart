@@ -12,6 +12,7 @@ class ErrorCodes {
   // Auth & access control.
   static const String unauthorized = 'unauthorized';
   static const String forbidden = 'forbidden';
+  static const String tooManyRequests = 'too_many_requests';
 
   // Routing & service hosting.
   static const String noRoute = 'no_route';

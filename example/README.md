@@ -9,6 +9,8 @@ a scenario, prints the results, and shuts everything down.
 | [`reverse_proxy_example.dart`](reverse_proxy_example.dart) | Path- and host-based reverse proxying to a backend, mixed with a local service (hybrid). |
 | [`auto_tls_example.dart`](auto_tls_example.dart) | Serving HTTPS with a static certificate (runnable); a Let's Encrypt config sketch. |
 | [`lets_encrypt_example.dart`](lets_encrypt_example.dart) | A full automatic-TLS HTTPS server via Let's Encrypt (ACME). Dry-run by default; `--run` on a real host. |
+| [`path_params_example.dart`](path_params_example.dart) | Path-parameter routing with `RouterService` (`<endpoint>`, `<path\|.*>` tail, method dispatch). |
+| [`layered_auth_example.dart`](layered_auth_example.dart) | Per-service + global authentication (`AuthCoordinator`, bypass/delegate/block) and host-regexp routing. |
 | [`node_example.dart`](node_example.dart) | A worker node registering with a hub, discovery, heartbeats and an RPC. |
 
 Run any example with:

@@ -17,11 +17,18 @@ class RegisteredNode {
   /// The authenticated principal behind the node connection, if any.
   final Principal? principal;
 
+  /// An id identifying this connection/peer, for reverse lookup
+  /// ([NodeRegistry.byConnectionId]). Assigned by the gateway on register.
+  final String? connectionId;
+
   /// When the hub last heard from the node.
   DateTime lastSeen;
 
   /// The last accepted heartbeat sequence number.
   int lastHeartbeatSeq;
+
+  /// Number of sessions currently routed to this node (application-maintained).
+  int activeSessions;
 
   /// Creates a registered-node record.
   RegisteredNode({
@@ -29,7 +36,9 @@ class RegisteredNode {
     required this.connection,
     required this.lastSeen,
     this.principal,
+    this.connectionId,
     this.lastHeartbeatSeq = 0,
+    this.activeSessions = 0,
   });
 
   /// The node's id.
@@ -81,22 +90,39 @@ class NodeRegistry {
   /// The node with [id], or `null`.
   RegisteredNode? byId(NodeId id) => _byId[id.value];
 
+  /// The node whose [RegisteredNode.connectionId] equals [connectionId], or
+  /// `null`.
+  RegisteredNode? byConnectionId(String connectionId) {
+    for (final node in _byId.values) {
+      if (node.connectionId == connectionId) return node;
+    }
+    return null;
+  }
+
   /// Registers (or replaces) a node from [descriptor], marking it online.
   RegisteredNode register({
     required NodeDescriptor descriptor,
     required Connection connection,
     required DateTime now,
     Principal? principal,
+    String? connectionId,
   }) {
     final node = RegisteredNode(
       descriptor: descriptor.copyWith(status: NodeStatus.online),
       connection: connection,
       lastSeen: now,
       principal: principal,
+      connectionId: connectionId,
     );
     _byId[descriptor.id.value] = node;
     _emit(NodeEventKind.registered, node.descriptor);
     return node;
+  }
+
+  /// Sets the [activeSessions] count for node [id].
+  void updateActiveSessions(NodeId id, int activeSessions) {
+    final node = _byId[id.value];
+    if (node != null) node.activeSessions = activeSessions;
   }
 
   /// Records an accepted heartbeat for node [id].

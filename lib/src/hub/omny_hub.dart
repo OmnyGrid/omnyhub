@@ -1,8 +1,12 @@
 import 'dart:async';
 
+import '../auth/auth_coordinator.dart';
 import '../auth/authenticator.dart';
 import '../auth/authorizer.dart';
+import '../auth/connection_authenticator.dart';
 import '../core/connection.dart';
+import '../core/handshake_connection.dart';
+import '../core/principal.dart';
 import '../core/ws_close.dart';
 import '../http/handler.dart';
 import '../http/hub_request.dart';
@@ -53,6 +57,17 @@ class OmnyHub {
   /// The hub-wide authorization gate. Defaults to [AllowAllAuthorizer].
   final Authorizer authorizer;
 
+  /// The global authentication coordinator, run after routing to decide whether
+  /// each request is authenticated globally, bypassed, delegated to the matched
+  /// service's authenticator, or blocked. Defaults to [DefaultAuthCoordinator]
+  /// (backward-compatible).
+  final AuthCoordinator authCoordinator;
+
+  /// The hub-wide in-band connection authenticator for WebSocket upgrades, used
+  /// when a route does not specify its own. `null` disables in-band connection
+  /// auth by default.
+  final ConnectionAuthenticator? connectionAuthenticator;
+
   /// The logger used by the hub and its default middleware.
   final Logger logger;
 
@@ -81,6 +96,8 @@ class OmnyHub {
     this.router = const RuleRouter(),
     this.authenticator = const AnonymousAuthenticator(),
     this.authorizer = const AllowAllAuthorizer(),
+    this.authCoordinator = const DefaultAuthCoordinator(),
+    this.connectionAuthenticator,
     this.logger = const NoopLogger(),
     this.clock = const SystemClock(),
     this.tlsRenewalInterval = const Duration(hours: 12),
@@ -151,13 +168,17 @@ class OmnyHub {
   /// Registers [service] and adds a route to it.
   ///
   /// The route matches [when] if given, otherwise a [PathRule] on the service's
-  /// [Service.mount]. [priority] orders it against other routes. If the hub is
-  /// running, the service is started immediately. Throws if the name is already
-  /// taken.
+  /// [Service.mount]. [priority] orders it against other routes. A per-service
+  /// [authenticator]/[authorizer]/[connectionAuthenticator] overrides the
+  /// hub-wide ones for this route. If the hub is running, the service is started
+  /// immediately. Throws if the name is already taken.
   Future<void> registerService(
     Service service, {
     RouteRule? when,
     int priority = 0,
+    Authenticator? authenticator,
+    Authorizer? authorizer,
+    ConnectionAuthenticator? connectionAuthenticator,
   }) async {
     _services.register(service);
     _routes.add(
@@ -166,6 +187,9 @@ class OmnyHub {
         rule: when ?? PathRule(service.mount),
         target: service,
         priority: priority,
+        authenticator: authenticator,
+        authorizer: authorizer,
+        connectionAuthenticator: connectionAuthenticator,
       ),
     );
     if (_running) await service.start();
@@ -178,8 +202,21 @@ class OmnyHub {
   /// hub.route(HostRule('api.example.com'), proxyService);
   /// hub.route(PathRule('/drive'), driveProxy, priority: 10);
   /// ```
-  Future<void> route(RouteRule rule, Service target, {int priority = 0}) =>
-      registerService(target, when: rule, priority: priority);
+  Future<void> route(
+    RouteRule rule,
+    Service target, {
+    int priority = 0,
+    Authenticator? authenticator,
+    Authorizer? authorizer,
+    ConnectionAuthenticator? connectionAuthenticator,
+  }) => registerService(
+    target,
+    when: rule,
+    priority: priority,
+    authenticator: authenticator,
+    authorizer: authorizer,
+    connectionAuthenticator: connectionAuthenticator,
+  );
 
   /// Removes and stops the service named [name] and drops its routes. Throws
   /// [NotFoundException] if absent.
@@ -278,10 +315,32 @@ class OmnyHub {
     if (route == null) {
       throw RoutingException(message: 'No route handles ${request.path}');
     }
-    if (!await authorizer.authorize(request.principal, context)) {
+    // Finalize the principal via the global coordinator + per-service
+    // authenticator (may throw a HubException to block — a pre-check).
+    request.principal = await _resolveAuth(request, route);
+    final effectiveAuthorizer = route.authorizer ?? authorizer;
+    if (!await effectiveAuthorizer.authorize(request.principal, context)) {
       throw const ForbiddenException();
     }
     return route.target.handle(request);
+  }
+
+  /// Resolves the effective principal for [request] on [route] using the global
+  /// [authCoordinator] and any per-service [Route.authenticator]. Throws the
+  /// blocking [HubException] for a [Blocked] decision.
+  Future<Principal?> _resolveAuth(HubRequest request, Route route) async {
+    final decision = await authCoordinator.authenticate(request, route);
+    switch (decision) {
+      case Authenticated(:final principal):
+        return principal;
+      case Anonymous():
+        return null;
+      case Blocked(:final reason):
+        throw reason;
+      case Delegate():
+        final auth = route.authenticator;
+        return auth == null ? null : await auth.authenticate(request);
+    }
   }
 
   Future<void> _handleUpgrade(Connection connection, HubRequest request) async {
@@ -299,10 +358,41 @@ class OmnyHub {
       await connection.close(WsCloseCodes.notFound, 'No route');
       return;
     }
-    if (!await authorizer.authorize(request.principal, context)) {
+    // Finalize the principal (coordinator + per-service authenticator).
+    try {
+      request.principal = await _resolveAuth(request, route);
+    } on HubException catch (e) {
+      await connection.close(_wsCodeFor(e), e.message);
+      return;
+    }
+    final effectiveAuthorizer = route.authorizer ?? authorizer;
+    if (!await effectiveAuthorizer.authorize(request.principal, context)) {
       await connection.close(WsCloseCodes.forbidden, 'Forbidden');
+      return;
+    }
+    // Optional in-band connection authentication (challenge/response handshake).
+    final connAuth = route.connectionAuthenticator ?? connectionAuthenticator;
+    if (connAuth != null) {
+      final handshake = HandshakeConnection(connection);
+      try {
+        request.principal = await connAuth.authenticate(handshake, request);
+      } on HubException catch (e) {
+        await handshake.close(_wsCodeFor(e), e.message);
+        return;
+      } on Object {
+        await handshake.close(WsCloseCodes.unauthorized, 'Unauthorized');
+        return;
+      }
+      await route.target.handleConnection(handshake, request);
       return;
     }
     await route.target.handleConnection(connection, request);
   }
+
+  static int _wsCodeFor(HubException e) => switch (e.statusCode) {
+    401 => WsCloseCodes.unauthorized,
+    403 => WsCloseCodes.forbidden,
+    404 => WsCloseCodes.notFound,
+    _ => WsCloseCodes.unauthorized,
+  };
 }
