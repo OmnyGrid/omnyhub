@@ -52,9 +52,15 @@ See the full API docs at [pub.dev/documentation/omnyhub][api_doc].
 - **Protocol-agnostic core.** HTTP, HTTPS, WS and WSS on one listener. All
   protocol-specific code (`shelf`, `http`, `web_socket_channel`) is isolated
   behind transport and connection ports; business logic never imports it.
-- **Advanced routing.** Match on host, domain, subdomain, path, protocol,
-  headers and authentication state; compose rules with `&`, `|`, `~`; drop to a
-  predicate; or plug in a custom routing strategy.
+- **Advanced routing.** Match on host, domain, subdomain (exact, `*.` wildcard
+  or **regexp**), path, protocol, headers and authentication state; compose rules
+  with `&`, `|`, `~`; drop to a predicate; or plug in a custom routing strategy.
+  Extract **path parameters** with `RouterService`/`PathPattern`, or host an
+  existing `shelf_router` via `ShelfService`.
+- **Layered authentication.** Per-service and global handlers via an
+  `AuthCoordinator` that decides authenticate / bypass / delegate / block
+  (pre-check), plus per-service `authenticator`/`authorizer` and an in-band
+  `ConnectionAuthenticator` for WebSocket handshakes.
 - **Reverse proxy & gateway.** Full request/response streaming, `X-Forwarded-*`
   injection, hop-by-hop header stripping and **WebSocket upgrade forwarding**, to
   local or remote upstreams. Host- and path-based gateways and hybrid deployments
@@ -140,12 +146,41 @@ hub.registerService(HandlerService(name: 'metrics', mount: '/metrics', handler: 
 await hub.start();
 ```
 
-**Advanced routing** (host, header, auth state, custom priority):
+**Advanced routing** (host, header, auth state, host-regexp + path, custom priority):
 
 ```dart
 hub.route(HostRule('api.example.com'), apiProxy);
 hub.route(PathRule('/app') & HeaderRule('x-canary', equals: 'true'), canary, priority: 10);
 hub.route(PathRule('/admin') & AuthStateRule.hasRole('admin'), adminService);
+hub.route(HostPatternRule(RegExp(r'^(dev|stg)\.example\.com$')) & PathRule('/api'), stagingApi);
+```
+
+**Path parameters** (native `RouterService`, or wrap an existing `shelf_router`):
+
+```dart
+final drives = RouterService(name: 'drives', mount: '/drives')
+  ..get('/drives/<endpoint>/<name>', (req, p) async =>
+      HubResponse.json({'endpoint': p['endpoint'], 'name': p['name']}))
+  ..get('/drives/<endpoint>/<name>/files/<path|.*>', (req, p) async =>
+      HubResponse.text('read ${p['path']}'));
+hub.registerService(drives);
+// or: hub.registerService(ShelfService(myShelfRouter.call, name: 'x', mount: '/x'));
+```
+
+**Layered authentication** (per-service + global coordinator with pre-checks):
+
+```dart
+final hub = OmnyHub(
+  transports: [HttpTransport.http(port: 8080)],
+  authCoordinator: CoordinatorFn((req, route) async {
+    if (req.header('x-attack') != null) return const Blocked(TooManyRequestsException());
+    if (req.path == '/health') return const Anonymous();  // bypass
+    return const Delegate();                                // use per-service handler
+  }),
+);
+hub.registerService(serviceA, authenticator: handlerX);   // A uses X
+hub.registerService(serviceB, authenticator: handlerX);   // B uses X
+hub.registerService(serviceC, authenticator: handlerY);   // C uses Y
 ```
 
 **Reverse proxy / gateway** (local, remote, hybrid):
@@ -262,6 +297,8 @@ See [`example/`](example/):
 | [reverse_proxy_example.dart](example/reverse_proxy_example.dart) | Path- and host-based proxying + a local service (hybrid). |
 | [auto_tls_example.dart](example/auto_tls_example.dart) | HTTPS with a static cert; a Let's Encrypt config sketch. |
 | [lets_encrypt_example.dart](example/lets_encrypt_example.dart) | Full automatic-TLS HTTPS via Let's Encrypt (ACME); dry-run by default. |
+| [path_params_example.dart](example/path_params_example.dart) | Path-parameter routing with `RouterService`. |
+| [layered_auth_example.dart](example/layered_auth_example.dart) | Per-service + global auth and host-regexp routing. |
 | [node_example.dart](example/node_example.dart) | A node registering, discovery, heartbeats and RPC. |
 
 ## Running the tests

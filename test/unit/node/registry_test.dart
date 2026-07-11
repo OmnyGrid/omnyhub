@@ -19,6 +19,7 @@ void main() {
     String id, {
     Set<String> caps = const {},
     Map<String, String> labels = const {},
+    String? connectionId,
   }) {
     return registry.register(
       descriptor: NodeDescriptor(
@@ -28,6 +29,7 @@ void main() {
       ),
       connection: LoopbackConnection(),
       now: clock.now(),
+      connectionId: connectionId,
     );
   }
 
@@ -77,6 +79,16 @@ void main() {
       NodeEventKind.timedOut,
       NodeEventKind.removed,
     ]);
+  });
+
+  test('byConnectionId and activeSessions', () {
+    add('n1', connectionId: 'conn-1');
+    add('n2', connectionId: 'conn-2');
+    expect(registry.byConnectionId('conn-2')?.id.value, 'n2');
+    expect(registry.byConnectionId('missing'), isNull);
+
+    registry.updateActiveSessions(NodeId('n1'), 3);
+    expect(registry.byId(NodeId('n1'))?.activeSessions, 3);
   });
 
   test('heartbeat updates lastSeen and seq', () {

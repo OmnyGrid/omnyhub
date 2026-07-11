@@ -164,6 +164,7 @@ class NodeGateway extends ServiceBase {
             connection: connection,
             now: clock.now(),
             principal: request.principal,
+            connectionId: _ids.next('conn'),
           );
           connection.send(
             codec.encode(

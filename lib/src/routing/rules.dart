@@ -68,6 +68,47 @@ class HostRule extends RouteRule {
   int get specificity => 10 + pattern.length;
 }
 
+/// Which part of the host a [HostPatternRule] matches against.
+enum HostPart {
+  /// The full host (e.g. `api.example.com`).
+  host,
+
+  /// The registrable domain (e.g. `example.com`).
+  domain,
+
+  /// The subdomain (e.g. `api`).
+  subdomain,
+}
+
+/// Matches a regular expression against the host (or its [part]).
+///
+/// Use this for host/domain routing beyond exact and `*.` wildcard matches —
+/// e.g. `HostPatternRule(RegExp(r'^(dev|stg)\.example\.com$'))` or match a
+/// subdomain shape with `part: HostPart.subdomain`. Combine with a [PathRule]
+/// via `&` to route by host *and* path prefix.
+class HostPatternRule extends RouteRule {
+  /// The pattern matched against the selected host [part].
+  final RegExp pattern;
+
+  /// Which part of the host to match.
+  final HostPart part;
+
+  /// Creates a host-pattern rule.
+  const HostPatternRule(this.pattern, {this.part = HostPart.host});
+
+  @override
+  bool matches(RouteContext context) => pattern.hasMatch(_value(context));
+
+  String _value(RouteContext context) => switch (part) {
+    HostPart.host => context.host,
+    HostPart.domain => context.domain,
+    HostPart.subdomain => context.subdomain,
+  };
+
+  @override
+  int get specificity => 9;
+}
+
 /// Matches the registrable [domain] portion of the host (e.g. `example.com`).
 class DomainRule extends RouteRule {
   /// The domain to match, lower-cased.
