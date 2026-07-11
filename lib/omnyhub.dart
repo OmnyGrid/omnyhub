@@ -45,7 +45,7 @@ export 'src/http/hub_response.dart';
 export 'src/transport/http_transport.dart';
 export 'src/transport/tls/lets_encrypt_tls.dart';
 export 'src/transport/tls/static_tls.dart';
-export 'src/transport/tls/tls_provider.dart';
+export 'src/transport/tls/tls_provider.dart' show TlsProvider, SniTlsProvider;
 export 'src/transport/transport.dart';
 export 'src/transport/web_socket_connection.dart';
 // Re-exported so `LetsEncryptTls(domains: [Domain(...)])` needs no extra import.

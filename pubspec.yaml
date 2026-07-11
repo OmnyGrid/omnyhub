@@ -4,7 +4,7 @@ description: >-
   services on one port, route by host/path/header/protocol/auth, act as a
   reverse proxy over HTTP/HTTPS/WS/WSS with automatic Let's Encrypt TLS, and
   build distributed HUB/Node infrastructures.
-version: 0.1.0
+version: 0.2.0
 repository: https://github.com/OmnyGrid/omnyhub
 
 environment:
@@ -13,6 +13,7 @@ environment:
 dependencies:
   http: ^1.6.0
   meta: ^1.16.0
+  multi_domain_secure_server: ^1.0.16
   shelf: ^1.4.2
   shelf_letsencrypt: ^2.0.3
   shelf_web_socket: ^3.0.0

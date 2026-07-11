@@ -10,16 +10,23 @@
 // does not bind privileged ports or contact the CA. Pass `--run` on a properly
 // configured host to actually start it.
 //
+// It also supports DYNAMIC / on-demand domains: pass `--on-demand <suffix>` to
+// serve (and provision certificates for) *any* subdomain of `<suffix>` the
+// first time it is requested — so `foo.example.com`, `bar.example.com`, … work
+// without listing each in code.
+//
 // Usage:
 //   dart run example/lets_encrypt_example.dart <domain> <email> [--run] \
-//       [--production] [--cache <dir>]
+//       [--production] [--cache <dir>] [--on-demand <suffix>]
 //
-// Example (staging, dry run):
+// Examples (staging, dry run):
 //   dart run example/lets_encrypt_example.dart example.com ops@example.com
+//   dart run example/lets_encrypt_example.dart example.com ops@example.com \
+//       --on-demand .example.com
 //
 // Example (real issuance on a server):
 //   sudo dart run example/lets_encrypt_example.dart example.com ops@example.com \
-//       --run --production --cache /var/lib/omnyhub/certs
+//       --run --production --cache /var/lib/omnyhub/certs --on-demand .example.com
 import 'dart:io';
 
 import 'package:omnyhub/omnyhub.dart';
@@ -29,7 +36,7 @@ Future<void> main(List<String> args) async {
   if (positional.length < 2) {
     stderr.writeln(
       'Usage: lets_encrypt_example <domain> <email> '
-      '[--run] [--production] [--cache <dir>]',
+      '[--run] [--production] [--cache <dir>] [--on-demand <suffix>]',
     );
     exitCode = 64;
     return;
@@ -40,16 +47,33 @@ Future<void> main(List<String> args) async {
   final run = args.contains('--run');
   final production = args.contains('--production');
   final cacheDir = _optionValue(args, '--cache') ?? 'certs';
+  final onDemandSuffix = _optionValue(args, '--on-demand');
 
   // The auto-TLS provider. `production: false` (the default) uses Let's
   // Encrypt *staging*, whose certificates are browser-invalid but avoid the
   // strict production rate limits — switch to production only once issuance
   // works end-to-end.
-  final tls = LetsEncryptTls(
-    domains: [Domain(name: domain, email: email)],
-    cacheDir: cacheDir,
-    production: production,
-  );
+  //
+  // With `--on-demand <suffix>`, any host ending in `<suffix>` gets a
+  // certificate provisioned on demand (served via SNI from a live cache) — no
+  // fixed domain list needed. Otherwise a single fixed certificate is used.
+  //
+  // The contact email can also be resolved per host with `emailResolver:`
+  // (e.g. `emailResolver: (host) async => lookupTenantEmail(host)`) when each
+  // domain has a different owner.
+  final tls = onDemandSuffix != null
+      ? LetsEncryptTls.onDemand(
+          email: email,
+          allowDomain: (host) => host.endsWith(onDemandSuffix),
+          cacheDir: cacheDir,
+          production: production,
+        )
+      : LetsEncryptTls.forDomain(
+          domain,
+          email,
+          cacheDir: cacheDir,
+          production: production,
+        );
 
   final hub = OmnyHub(
     transports: [
@@ -80,6 +104,9 @@ Future<void> main(List<String> args) async {
     stdout.writeln('  email      : $email');
     stdout.writeln('  environment: ${production ? 'production' : 'staging'}');
     stdout.writeln('  cacheDir   : $cacheDir');
+    stdout.writeln(
+      '  on-demand  : ${onDemandSuffix ?? '(disabled — only $domain)'}',
+    );
     stdout.writeln(
       'Re-run with --run on a host that owns $domain and can '
       'accept traffic on ports 80 and 443.',
