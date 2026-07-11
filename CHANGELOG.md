@@ -1,3 +1,49 @@
+## 1.0.0
+
+First stable release. OmnyHub is a reusable, protocol-agnostic HUB framework for
+building distributed HUB/Node infrastructures over HTTP/HTTPS/WS/WSS behind one
+architecture and API.
+
+### Features
+
+- **Multi-service hosting.** Host many `Service`s on one `OmnyHub` instance,
+  exposed through the same server, port and protocol (`/api/*`, `/drive/*`,
+  `/metrics/*`, …). Services register and unregister dynamically.
+- **Protocol-agnostic transport.** HTTP, HTTPS, WS and WSS on a single `shelf`
+  listener behind a `Transport` port; a `Connection`/`Message` abstraction for
+  the WebSocket control plane. All protocol-specific code is isolated from
+  business logic.
+- **Advanced routing.** Match on host, domain and subdomain (exact, `*.`
+  wildcard, or **regexp** via `HostPatternRule`), path prefix, **path parameters**
+  (`RouterService`/`PathPattern`, or an existing `shelf_router` via
+  `ShelfService`), protocol, headers, method and authentication state. Compose
+  rules with `&`/`|`/`~`, use a predicate, or plug in a custom `Router`.
+- **Reverse proxy & gateway.** `ProxyService` streams HTTP requests/responses,
+  injects `X-Forwarded-*`, strips hop-by-hop headers, and forwards WebSocket
+  upgrades — to local or remote upstreams. Host- and path-based gateways and
+  hybrid (local + proxied) deployments.
+- **Automatic TLS.** `StaticTls`, `ReloadableFileTls` (hot-reload cert files),
+  and `LetsEncryptTls` (ACME HTTP-01) with provisioning, renewal and hot-reload —
+  including **dynamic, on-demand multi-domain** issuance via SNI (a domain policy
+  and per-host, optionally async, contact-email resolver), so new subdomains are
+  provisioned as they are first used.
+- **Layered authentication & authorization.** A global `AuthCoordinator`
+  deciding authenticate / bypass / delegate / block (pre-check), **per-service**
+  authenticators and authorizers, and an in-band `ConnectionAuthenticator` for
+  WebSocket handshakes. Built-in Bearer/Basic/composite authenticators and
+  role-based/predicate authorizers, all fail-closed.
+- **Node infrastructure.** A generic control protocol + extensible `MessageCodec`,
+  `NodeGateway`, `NodeRegistry`, capability/label discovery, `HeartbeatMonitor`,
+  and a node-side `NodeRuntime`/`OmnyNode` with registration, heartbeats, RPC,
+  peer discovery and reconnection with backoff.
+- **Demo CLI** (`bin/omnyhub.dart`) that launches a config-driven
+  reverse-proxy/gateway, runnable examples, and `doc/protocol.md` +
+  `doc/security.md`.
+- **Tested.** Unit, integration and end-to-end tests over real servers and
+  sockets — no mocking library.
+
+The `0.x` entries below record the incremental pre-release development.
+
 ## 0.3.0
 
 ### Added
