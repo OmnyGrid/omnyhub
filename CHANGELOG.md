@@ -1,3 +1,29 @@
+## 1.1.0
+
+Synergy release — shared primitives that let protocol-oriented apps (like
+OmnyShell) ride on omnyhub's transport without a reverse-adapter, and make TLS
+renewal seamless. Fully backward-compatible (additive).
+
+### Added
+
+- **`ConnectionCodec<T>` + `TypedConnection<T>`** — a first-class "codec over a
+  raw duplex connection" primitive. A protocol supplies a
+  `ConnectionCodec<AppFrame>` (mapping its frames to `Message`s) and exchanges
+  decoded values over any omnyhub `Connection`; undecodable inbound frames are
+  dropped. omnyhub's node `MessageCodec` is now a
+  `ConnectionCodec<NodeControlMessage>`, and the node runtime consumes a
+  `TypedConnection`.
+
+### Changed
+
+- **Gap-free TLS rebind.** `HttpTransport.rebind()` now binds a fresh `shared`
+  listener on the **same** port with the renewed certificate and drains the old
+  one gracefully (`force: false`) — live connections survive certificate renewal
+  instead of being dropped. Benefits automatic Let's Encrypt renewal.
+- **`ReloadableFileTls`** detects changes by **byte content** (not mtime+size),
+  so same-size rotations are caught and a partial write that fails to parse
+  keeps the previous certificate.
+
 ## 1.0.0
 
 First stable release. OmnyHub is a reusable, protocol-agnostic HUB framework for

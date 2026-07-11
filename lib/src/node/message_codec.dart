@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import '../core/connection_codec.dart';
 import '../core/message.dart';
 import '../shared/errors/hub_exception.dart';
 import '../shared/json/json.dart';
@@ -11,10 +12,12 @@ typedef ControlDecoder = NodeControlMessage Function(Map<String, dynamic> json);
 /// Encodes [NodeControlMessage]s to [Message]s and back, using a JSON envelope
 /// `{"t": <type>, ...fields}`.
 ///
-/// The decoder set is extensible: third-party packages can [register] new
-/// message types on top of [MessageCodec.standard], mirroring OmnyShell's
-/// `FrameCodec` registry.
-class MessageCodec {
+/// A [ConnectionCodec] over the node control protocol — pair it with a
+/// [TypedConnection] to exchange decoded [NodeControlMessage]s directly. The
+/// decoder set is extensible: third-party packages can [register] new message
+/// types on top of [MessageCodec.standard], mirroring OmnyShell's `FrameCodec`
+/// registry.
+class MessageCodec implements ConnectionCodec<NodeControlMessage> {
   final Map<String, ControlDecoder> _decoders;
 
   /// Creates a codec with the given [decoders].
@@ -41,12 +44,14 @@ class MessageCodec {
   }
 
   /// Encodes [message] as a text [Message].
+  @override
   Message encode(NodeControlMessage message) =>
       TextMessage(jsonEncode({'t': message.type, ...message.toJson()}));
 
   /// Decodes [message] into a [NodeControlMessage].
   ///
   /// Throws [ProtocolException] on malformed JSON or an unknown type.
+  @override
   NodeControlMessage decode(Message message) {
     final text = switch (message) {
       TextMessage(:final data) => data,

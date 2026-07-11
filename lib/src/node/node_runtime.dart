@@ -2,8 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
-import '../core/connection.dart';
-import '../core/message.dart';
+import '../core/connection_codec.dart';
 import '../shared/errors/hub_exception.dart';
 import '../shared/utils/id_generator.dart';
 import '../shared/utils/logger.dart';
@@ -177,7 +176,7 @@ class NodeRuntime {
   final Map<String, Completer<List<NodeDescriptor>>> _pendingQueries = {};
 
   NodeState _state = NodeState.disconnected;
-  Connection? _connection;
+  TypedConnection<NodeControlMessage>? _typed;
   Completer<NodeRegistered>? _registered;
   Timer? _heartbeatTimer;
   int _heartbeatSeq = 0;
@@ -213,10 +212,10 @@ class NodeRuntime {
   Future<void> stop() async {
     if (_stopped) return;
     _stopped = true;
-    final conn = _connection;
-    if (conn != null && conn.isOpen) {
-      conn.send(codec.encode(const NodeGoodbye('shutdown')));
-      await conn.close();
+    final typed = _typed;
+    if (typed != null && typed.isOpen) {
+      typed.send(const NodeGoodbye('shutdown'));
+      await typed.close();
     }
     await _loop;
     _loop = null;
@@ -229,18 +228,14 @@ class NodeRuntime {
     Map<String, String> labels = const {},
     Duration timeout = const Duration(seconds: 10),
   }) async {
-    final conn = _connection;
-    if (conn == null || _state != NodeState.ready) {
+    final typed = _typed;
+    if (typed == null || _state != NodeState.ready) {
       throw const NodeUnavailableException('Node is not connected to a hub');
     }
     final requestId = _ids.next('q');
     final completer = Completer<List<NodeDescriptor>>();
     _pendingQueries[requestId] = completer;
-    conn.send(
-      codec.encode(
-        NodeQuery(requestId, capability: capability, labels: labels),
-      ),
-    );
+    typed.send(NodeQuery(requestId, capability: capability, labels: labels));
     try {
       return await completer.future.timeout(timeout);
     } on TimeoutException {
@@ -259,18 +254,19 @@ class NodeRuntime {
           securityContext: config.securityContext,
           onBadCertificate: config.onBadCertificate,
         );
-        _connection = conn;
+        final typed = TypedConnection(conn, codec);
+        _typed = typed;
         _setState(NodeState.registering);
 
         final registered = Completer<NodeRegistered>();
         _registered = registered;
-        final sub = conn.incoming.listen(
-          _onMessage,
+        final sub = typed.incoming.listen(
+          _onControl,
           onError: (Object _) {},
           cancelOnError: false,
         );
 
-        conn.send(codec.encode(NodeRegister(config.descriptor)));
+        typed.send(NodeRegister(config.descriptor));
         final ack = await registered.future.timeout(config.registerTimeout);
 
         config.reconnect.reset();
@@ -288,7 +284,7 @@ class NodeRuntime {
       } finally {
         _stopHeartbeat();
         _registered = null;
-        _connection = null;
+        _typed = null;
       }
 
       if (_stopped) break;
@@ -298,13 +294,7 @@ class NodeRuntime {
     _setState(NodeState.stopped);
   }
 
-  void _onMessage(Message message) {
-    NodeControlMessage decoded;
-    try {
-      decoded = codec.decode(message);
-    } on Object {
-      return; // ignore undecodable frames
-    }
+  void _onControl(NodeControlMessage decoded) {
     switch (decoded) {
       case NodeRegistered():
         if (_registered?.isCompleted == false) _registered!.complete(decoded);
@@ -326,33 +316,27 @@ class NodeRuntime {
   }
 
   Future<void> _handleRequest(NodeRequest request) async {
-    final conn = _connection;
-    if (conn == null) return;
+    final typed = _typed;
+    if (typed == null) return;
     final handler = config.onRequest;
     if (handler == null) {
-      conn.send(
-        codec.encode(
-          NodeResponse.failure(request.requestId, 'No request handler'),
-        ),
-      );
+      typed.send(NodeResponse.failure(request.requestId, 'No request handler'));
       return;
     }
     try {
       final payload = await handler(request.action, request.payload);
-      conn.send(
-        codec.encode(NodeResponse(request.requestId, payload: payload)),
-      );
+      typed.send(NodeResponse(request.requestId, payload: payload));
     } on Object catch (e) {
-      conn.send(codec.encode(NodeResponse.failure(request.requestId, '$e')));
+      typed.send(NodeResponse.failure(request.requestId, '$e'));
     }
   }
 
   void _startHeartbeat(Duration interval) {
     _stopHeartbeat();
     _heartbeatTimer = Timer.periodic(interval, (_) {
-      final conn = _connection;
-      if (conn != null && conn.isOpen) {
-        conn.send(codec.encode(Heartbeat(++_heartbeatSeq)));
+      final typed = _typed;
+      if (typed != null && typed.isOpen) {
+        typed.send(Heartbeat(++_heartbeatSeq));
       }
     });
   }

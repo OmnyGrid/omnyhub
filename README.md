@@ -51,7 +51,9 @@ See the full API docs at [pub.dev/documentation/omnyhub][api_doc].
   Services are added and removed dynamically.
 - **Protocol-agnostic core.** HTTP, HTTPS, WS and WSS on one listener. All
   protocol-specific code (`shelf`, `http`, `web_socket_channel`) is isolated
-  behind transport and connection ports; business logic never imports it.
+  behind transport and connection ports; business logic never imports it. Layer
+  your own wire protocol with a `ConnectionCodec<T>` + `TypedConnection<T>` to
+  exchange decoded frames over any connection.
 - **Advanced routing.** Match on host, domain, subdomain (exact, `*.` wildcard
   or **regexp**), path, protocol, headers and authentication state; compose rules
   with `&`, `|`, `~`; drop to a predicate; or plug in a custom routing strategy.
