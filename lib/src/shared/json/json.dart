@@ -98,6 +98,19 @@ class Json {
     throw ProtocolException("Invalid map field '$key'");
   }
 
+  /// Reads an optional JSON-object field [key], returning an empty map if
+  /// absent.
+  ///
+  /// Unlike [optStringMap] the values keep their JSON types, so the map may nest
+  /// arbitrarily — used for the free-form payload/attribute fields that carry
+  /// application data through the node protocol.
+  static Map<String, dynamic> optObject(Map<String, dynamic> json, String key) {
+    final value = json[key];
+    if (value == null) return const {};
+    if (value is Map) return value.cast<String, dynamic>();
+    throw ProtocolException("Invalid object field '$key'");
+  }
+
   /// Reads an optional list of strings field [key], returning an empty list if
   /// absent.
   static List<String> optStringList(Map<String, dynamic> json, String key) {

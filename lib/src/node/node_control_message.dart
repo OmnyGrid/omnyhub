@@ -30,18 +30,30 @@ final class NodeRegister extends NodeControlMessage {
   /// The full descriptor the node advertises.
   final NodeDescriptor descriptor;
 
-  /// Registers [descriptor].
-  const NodeRegister(this.descriptor);
+  /// Application data submitted with the registration (e.g. a certificate
+  /// signing request, an enrolment secret).
+  ///
+  /// Interpreted by the hub's registration handler; the hub's own bookkeeping
+  /// ignores it.
+  final Map<String, dynamic> payload;
+
+  /// Registers [descriptor], optionally with an application [payload].
+  const NodeRegister(this.descriptor, {this.payload = const {}});
 
   @override
   String get type => typeName;
 
   @override
-  Map<String, dynamic> toJson() => {'descriptor': descriptor.toJson()};
+  Map<String, dynamic> toJson() => {
+    'descriptor': descriptor.toJson(),
+    if (payload.isNotEmpty) 'payload': payload,
+  };
 
   /// Decodes from [json].
-  static NodeRegister fromJson(Map<String, dynamic> json) =>
-      NodeRegister(NodeDescriptor.fromJson(Json.asObject(json['descriptor'])));
+  static NodeRegister fromJson(Map<String, dynamic> json) => NodeRegister(
+    NodeDescriptor.fromJson(Json.asObject(json['descriptor'])),
+    payload: Json.optObject(json, 'payload'),
+  );
 }
 
 /// Hub → node: acknowledge registration, advertising the expected heartbeat
@@ -56,8 +68,16 @@ final class NodeRegistered extends NodeControlMessage {
   /// The heartbeat interval (ms) the node should use.
   final int heartbeatIntervalMs;
 
-  /// Acknowledges registration.
-  const NodeRegistered(this.hubId, this.heartbeatIntervalMs);
+  /// Application data returned by the hub's registration handler (e.g. a signed
+  /// certificate, an assigned lease).
+  final Map<String, dynamic> payload;
+
+  /// Acknowledges registration, optionally with an application [payload].
+  const NodeRegistered(
+    this.hubId,
+    this.heartbeatIntervalMs, {
+    this.payload = const {},
+  });
 
   @override
   String get type => typeName;
@@ -66,13 +86,40 @@ final class NodeRegistered extends NodeControlMessage {
   Map<String, dynamic> toJson() => {
     'hubId': hubId,
     'heartbeatIntervalMs': heartbeatIntervalMs,
+    if (payload.isNotEmpty) 'payload': payload,
   };
 
   /// Decodes from [json].
   static NodeRegistered fromJson(Map<String, dynamic> json) => NodeRegistered(
     Json.requireString(json, 'hubId'),
     Json.requireInt(json, 'heartbeatIntervalMs'),
+    payload: Json.optObject(json, 'payload'),
   );
+}
+
+/// Node → hub: revise the advertised descriptor without re-registering.
+///
+/// Fire-and-forget: the hub replaces the descriptor in its registry (keeping the
+/// node's connection and liveness) and does not ack.
+@immutable
+final class NodeUpdate extends NodeControlMessage {
+  static const typeName = 'update';
+
+  /// The descriptor that replaces the currently advertised one.
+  final NodeDescriptor descriptor;
+
+  /// Advertises [descriptor] in place of the previous one.
+  const NodeUpdate(this.descriptor);
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {'descriptor': descriptor.toJson()};
+
+  /// Decodes from [json].
+  static NodeUpdate fromJson(Map<String, dynamic> json) =>
+      NodeUpdate(NodeDescriptor.fromJson(Json.asObject(json['descriptor'])));
 }
 
 /// Node → hub: liveness ping carrying a monotonic sequence number.
@@ -133,8 +180,20 @@ final class NodeQuery extends NodeControlMessage {
   /// Required labels (all must match).
   final Map<String, String> labels;
 
+  /// An application-defined filter, interpreted hub-side by a `NodeMatcher`.
+  ///
+  /// [capability] and [labels] cover the built-in flat matching; use [filter]
+  /// for query semantics the hub cannot know about (version ranges, nested
+  /// catalogues). Ignored unless the gateway has a matcher configured.
+  final Map<String, dynamic> filter;
+
   /// Creates a discovery query.
-  const NodeQuery(this.requestId, {this.capability, this.labels = const {}});
+  const NodeQuery(
+    this.requestId, {
+    this.capability,
+    this.labels = const {},
+    this.filter = const {},
+  });
 
   @override
   String get type => typeName;
@@ -144,6 +203,7 @@ final class NodeQuery extends NodeControlMessage {
     'requestId': requestId,
     if (capability != null) 'capability': capability,
     'labels': labels,
+    if (filter.isNotEmpty) 'filter': filter,
   };
 
   /// Decodes from [json].
@@ -151,6 +211,7 @@ final class NodeQuery extends NodeControlMessage {
     Json.requireString(json, 'requestId'),
     capability: Json.optString(json, 'capability'),
     labels: Json.optStringMap(json, 'labels'),
+    filter: Json.optObject(json, 'filter'),
   );
 }
 

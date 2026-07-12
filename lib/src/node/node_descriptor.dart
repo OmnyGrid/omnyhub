@@ -37,6 +37,15 @@ class NodeDescriptor {
   /// Additional free-form metadata (not used for filtering).
   final Map<String, String> metadata;
 
+  /// Structured, JSON-typed application data the node advertises (e.g. a nested
+  /// service catalogue, an organisation id, a public key).
+  ///
+  /// Unlike [labels] and [metadata] — which are flat string→string maps — values
+  /// here keep their JSON types and may nest. The built-in discovery filters
+  /// ignore [attributes]; match on it with a custom `NodeMatcher` or the `where`
+  /// predicate on `NodeRegistry.discover`.
+  final Map<String, dynamic> attributes;
+
   /// The node agent's version string.
   final String agentVersion;
 
@@ -49,11 +58,13 @@ class NodeDescriptor {
     Set<String> capabilities = const {},
     Map<String, String> labels = const {},
     Map<String, String> metadata = const {},
+    Map<String, dynamic> attributes = const {},
     this.agentVersion = 'unknown',
     this.status = NodeStatus.unknown,
   }) : capabilities = Set.unmodifiable(capabilities),
        labels = Map.unmodifiable(labels),
-       metadata = Map.unmodifiable(metadata);
+       metadata = Map.unmodifiable(metadata),
+       attributes = Map.unmodifiable(attributes);
 
   /// Whether the node advertises [capability].
   bool hasCapability(String capability) => capabilities.contains(capability);
@@ -71,6 +82,7 @@ class NodeDescriptor {
     Set<String>? capabilities,
     Map<String, String>? labels,
     Map<String, String>? metadata,
+    Map<String, dynamic>? attributes,
     String? agentVersion,
     NodeStatus? status,
   }) => NodeDescriptor(
@@ -78,16 +90,21 @@ class NodeDescriptor {
     capabilities: capabilities ?? this.capabilities,
     labels: labels ?? this.labels,
     metadata: metadata ?? this.metadata,
+    attributes: attributes ?? this.attributes,
     agentVersion: agentVersion ?? this.agentVersion,
     status: status ?? this.status,
   );
 
   /// Serialises the descriptor to a JSON map.
+  ///
+  /// [attributes] is omitted when empty, so descriptors that do not use it
+  /// serialise exactly as before.
   Map<String, dynamic> toJson() => {
     'id': id.value,
     'capabilities': capabilities.toList()..sort(),
     'labels': labels,
     'metadata': metadata,
+    if (attributes.isNotEmpty) 'attributes': attributes,
     'agentVersion': agentVersion,
     'status': status.name,
   };
@@ -98,6 +115,7 @@ class NodeDescriptor {
     capabilities: Json.optStringList(json, 'capabilities').toSet(),
     labels: Json.optStringMap(json, 'labels'),
     metadata: Json.optStringMap(json, 'metadata'),
+    attributes: Json.optObject(json, 'attributes'),
     agentVersion: Json.optString(json, 'agentVersion', 'unknown')!,
     status: NodeStatus.fromWire(Json.optString(json, 'status', 'unknown')!),
   );

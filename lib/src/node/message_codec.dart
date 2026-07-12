@@ -28,6 +28,7 @@ class MessageCodec implements ConnectionCodec<NodeControlMessage> {
   factory MessageCodec.standard() => MessageCodec({
     NodeRegister.typeName: NodeRegister.fromJson,
     NodeRegistered.typeName: NodeRegistered.fromJson,
+    NodeUpdate.typeName: NodeUpdate.fromJson,
     Heartbeat.typeName: Heartbeat.fromJson,
     HeartbeatAck.typeName: HeartbeatAck.fromJson,
     NodeQuery.typeName: NodeQuery.fromJson,
