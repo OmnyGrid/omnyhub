@@ -362,7 +362,7 @@ class OmnyHub {
     try {
       request.principal = await _resolveAuth(request, route);
     } on HubException catch (e) {
-      await connection.close(_wsCodeFor(e), e.message);
+      await connection.close(WsCloseCodes.forException(e), e.message);
       return;
     }
     final effectiveAuthorizer = route.authorizer ?? authorizer;
@@ -377,7 +377,7 @@ class OmnyHub {
       try {
         request.principal = await connAuth.authenticate(handshake, request);
       } on HubException catch (e) {
-        await handshake.close(_wsCodeFor(e), e.message);
+        await handshake.close(WsCloseCodes.forException(e), e.message);
         return;
       } on Object {
         await handshake.close(WsCloseCodes.unauthorized, 'Unauthorized');
@@ -388,11 +388,4 @@ class OmnyHub {
     }
     await route.target.handleConnection(connection, request);
   }
-
-  static int _wsCodeFor(HubException e) => switch (e.statusCode) {
-    401 => WsCloseCodes.unauthorized,
-    403 => WsCloseCodes.forbidden,
-    404 => WsCloseCodes.notFound,
-    _ => WsCloseCodes.unauthorized,
-  };
 }

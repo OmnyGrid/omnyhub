@@ -13,10 +13,13 @@ typedef ControlDecoder = NodeControlMessage Function(Map<String, dynamic> json);
 /// `{"t": <type>, ...fields}`.
 ///
 /// A [ConnectionCodec] over the node control protocol — pair it with a
-/// [TypedConnection] to exchange decoded [NodeControlMessage]s directly. The
-/// decoder set is extensible: third-party packages can [register] new message
-/// types on top of [MessageCodec.standard], mirroring OmnyShell's `FrameCodec`
-/// registry.
+/// [TypedConnection] to exchange decoded [NodeControlMessage]s directly.
+///
+/// [register] remaps a *wire type string* onto one of the built-in messages (to
+/// accept a legacy or aliased discriminator). It cannot introduce a new message
+/// type: [NodeControlMessage] is `sealed`, so its decoders can only ever return
+/// a built-in. Application protocols ride on [NodeRequest]/[NodeResponse] and
+/// [NodeNotify].
 class MessageCodec implements ConnectionCodec<NodeControlMessage> {
   final Map<String, ControlDecoder> _decoders;
 
@@ -35,6 +38,7 @@ class MessageCodec implements ConnectionCodec<NodeControlMessage> {
     NodeQueryResult.typeName: NodeQueryResult.fromJson,
     NodeRequest.typeName: NodeRequest.fromJson,
     NodeResponse.typeName: NodeResponse.fromJson,
+    NodeNotify.typeName: NodeNotify.fromJson,
     NodeGoodbye.typeName: NodeGoodbye.fromJson,
     NodeErrorMessage.typeName: NodeErrorMessage.fromJson,
   });
@@ -51,15 +55,19 @@ class MessageCodec implements ConnectionCodec<NodeControlMessage> {
 
   /// Decodes [message] into a [NodeControlMessage].
   ///
-  /// Throws [ProtocolException] on malformed JSON or an unknown type.
+  /// Throws [ProtocolException] on a non-UTF-8 binary frame, malformed JSON, or
+  /// an unknown type — never a raw `FormatException`, so callers can rely on
+  /// catching [HubException] alone.
   @override
   NodeControlMessage decode(Message message) {
-    final text = switch (message) {
-      TextMessage(:final data) => data,
-      BinaryMessage() => message.asString,
-    };
     final Object? raw;
     try {
+      // A binary frame is only valid here if it happens to carry UTF-8 JSON;
+      // `asString` throws on arbitrary bytes, so decode it inside the guard.
+      final text = switch (message) {
+        TextMessage(:final data) => data,
+        BinaryMessage() => message.asString,
+      };
       raw = jsonDecode(text);
     } on Object {
       throw const ProtocolException('Malformed control message JSON');

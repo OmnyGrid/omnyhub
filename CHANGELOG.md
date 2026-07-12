@@ -1,3 +1,101 @@
+## 1.3.0
+
+Control-plane release — the seams an application needs to host its *own* node
+protocol on `NodeGateway`/`NodeRuntime` rather than reimplementing the registry,
+heartbeat watchdog and RPC correlation around them. Driven by adopting omnyhub in
+OmnyServer, whose hub/agent had grown a parallel copy of all three.
+
+Additive and backward-compatible: every new field is omitted from the wire when
+empty, every new hook defaults to `null`, and every new option defaults to the
+1.2.0 behaviour. Verified by running the omnydrive and omnyshell suites
+unmodified against this release.
+
+### Added
+
+- **Heartbeat telemetry.** `Heartbeat.payload` carries application data on the
+  beat (a metrics snapshot, a queue depth), produced by
+  `NodeConfig.heartbeatPayload` and consumed by `NodeGateway.onHeartbeat`. Saves
+  a second periodic message for telemetry a node already reports on the same
+  cadence. A payload builder that throws or stalls never costs the node its
+  liveness — the beat goes out empty.
+- **One-way push (`NodeNotify`).** The fire-and-forget counterpart of
+  `NodeRequest`: same `action` + `payload`, no correlation id, no reply. Sent
+  with `NodeRuntime.notify` / `NodeGateway.notify`, received via
+  `NodeGateway.onNotify` / `NodeConfig.onRequest`. Previously a node could only
+  push by calling `request` and discarding a response it did not want.
+- **Connection lifecycle hooks.** `NodeGateway.onConnect` / `onDisconnect` /
+  `onTimeout` observe a control connection opening and closing, so an application
+  can audit, persist or publish on every transition. `onConnect` fires for
+  sockets that never register — which the registry's events cannot see at all —
+  and `onDisconnect` hands over the whole `RegisteredNode`, not just a
+  descriptor.
+- **Node retention.** `NodeGateway.retainNodes` keeps a disconnected or
+  timed-out node in the registry, marked offline, instead of dropping the record.
+  For a hub that is the system of record for a known fleet: an offline node stays
+  queryable by `NodeRegistry.byId` with its last-known descriptor and
+  re-registers into the same slot. Offline nodes are excluded from `discover`
+  either way. Backed by a new `NodeRegistry.markOffline` and
+  `NodeEventKind.disconnected`.
+- **Per-node application state.** `RegisteredNode.state`, a mutable bag the
+  application owns. The registry constructs `RegisteredNode` itself, so
+  subclassing it to add fields never worked; the pre-existing `activeSessions`
+  field was the one hardcoded concession to this.
+- **`NodeEvent.node`** exposes the affected `RegisteredNode` — its connection,
+  principal and state — so a subscriber no longer has to re-look-up the registry
+  to act on an event.
+- **Injectable node transport.** `NodeConfig.connect` replaces the built-in
+  WebSocket dial, for a transport omnyhub does not ship and for driving a
+  `NodeRuntime` against a loopback connection in tests. `NodeConfig.pingInterval`
+  exposes WebSocket-level keepalive, which the runtime previously never passed.
+- **`NodeConfig.descriptorBuilder`** rebuilds the advertised descriptor on every
+  connection attempt, replacing the static one assembled at construction. A node
+  that changes while it is running — a GPU driver lands, a runtime is installed,
+  a label is retagged — now advertises the change on its next (re)registration
+  instead of being stuck with what it knew at startup.
+- **Terminal-failure policy.** `NodeConfig.isTerminal` ends the runtime instead
+  of retrying, with the cause left in `NodeRuntime.terminalError`. Reconnecting
+  cannot fix a revoked key or a refused enrolment — it just hammers the hub
+  forever, which is what a node did before this.
+- **`AppException`**, a public `HubException` an application raises with its own
+  `code` and `statusCode`. `HubException` is `sealed`, so an application could not
+  slot its own failures into the hierarchy, and everything that maps errors to the
+  wire keys off `HubException` — so an application error became an opaque 500.
+- **`WsCloseCodes.forException`**, the single `HubException` → close-code mapping,
+  replacing a private copy duplicated in `OmnyHub` and `NodeGateway`. It now maps
+  502/503/504 to `badGateway`; previously every status outside 401/403/404 fell
+  through to `unauthorized`, so an unavailable node was reported to the peer as an
+  auth failure.
+- **`TypedConnection.onDecodeError`** observes frames the codec rejects. Dropping
+  them is deliberate — one bad frame must not tear the connection down — but it
+  was also invisible, hiding version skew and codec bugs.
+- **`LoggerBase`**, a mixin deriving `debug`/`info`/`warn`/`error` from `log`, so
+  a `Logger` adapter implements two methods instead of six.
+
+### Fixed
+
+- **Frames sent during registration were silently dropped.** `NodeGateway` ran
+  `onRegister` without awaiting it before dispatching further frames, so anything
+  arriving while an async handler was in flight raced an unset registration and
+  was discarded (`Heartbeat`, `NodeUpdate`) or refused as `Not registered`
+  (`NodeRequest`). A node may pipeline after `register` without waiting for its
+  ack, and any `onRegister` doing real work (vetting a CSR, writing to a repo)
+  widened the window. Such frames are now queued and replayed in order once
+  registration settles, and discarded if it is rejected.
+- **A stray binary frame could take down the gateway.** `MessageCodec.decode`
+  UTF-8-decoded a `BinaryMessage` outside its guard, so arbitrary bytes escaped as
+  a raw `FormatException` — past `NodeGateway`'s `HubException`-only catch — and
+  surfaced as an uncaught async error. Decode failures are now always a
+  `ProtocolException`, the peer gets a `NodeErrorMessage`, and the connection
+  keeps serving.
+
+### Changed
+
+- `MessageCodec`'s documentation claimed third parties could register new message
+  types. They cannot: `NodeControlMessage` is `sealed`, so a decoder can only ever
+  return a built-in, and `register` merely remaps a wire string onto one.
+  Application protocols ride on `NodeRequest`/`NodeResponse` and `NodeNotify`,
+  which is now what the docs say.
+
 ## 1.2.0
 
 Control-plane release — the node protocol grows the pieces an application needs

@@ -151,6 +151,50 @@ class NodeConfig {
   /// and falls into the usual reconnect backoff.
   final Future<void> Function(HandshakeConnection connection)? onHandshake;
 
+  /// Builds the application data piggy-backed on every [Heartbeat] (e.g. a
+  /// resource-metrics snapshot), consumed hub-side by
+  /// `NodeGateway.onHeartbeat`.
+  ///
+  /// Evaluated on each beat. Keep it cheap: a slow or throwing builder does not
+  /// delay or suppress the beat — liveness never depends on telemetry — but the
+  /// beat then carries no payload.
+  final Future<Map<String, dynamic>> Function()? heartbeatPayload;
+
+  /// The WebSocket-level ping interval, for keepalive through idle-timing
+  /// proxies. `null` (the default) disables it; the protocol's own [Heartbeat]
+  /// is what the hub uses for liveness.
+  final Duration? pingInterval;
+
+  /// Opens the control connection, replacing the default `wss://`/`ws://` dial
+  /// to [hubUri].
+  ///
+  /// Evaluated on every connection attempt. The seam for a transport omnyhub
+  /// does not ship (a unix socket, an in-memory pipe) and for driving a runtime
+  /// against a loopback connection in tests. When set, [hubUri],
+  /// [securityContext], [onBadCertificate], [headers] and [pingInterval] are the
+  /// caller's business — the runtime does not use them.
+  final Future<Connection> Function()? connect;
+
+  /// Builds the descriptor to advertise, replacing the static one assembled from
+  /// [capabilities]/[labels]/[metadata]/[attributes].
+  ///
+  /// Evaluated on every connection attempt, so a node that changes while it is
+  /// running — a GPU driver lands, a runtime is installed, a label is retagged —
+  /// advertises the change on its next (re)registration instead of being stuck
+  /// with what it knew at construction.
+  final Future<NodeDescriptor> Function()? descriptorBuilder;
+
+  /// Whether the given `error` is unrecoverable, ending the runtime instead of
+  /// retrying.
+  ///
+  /// By default every failure is retried with backoff, on the assumption that
+  /// hubs come back. That is wrong for a rejection the node cannot fix by trying
+  /// again — a revoked key, an unknown node id, a refused enrolment — where
+  /// reconnecting just hammers the hub forever. Return `true` for those: the
+  /// loop stops, [NodeRuntime.state] settles on [NodeState.stopped], and the
+  /// cause is left in [NodeRuntime.terminalError].
+  final bool Function(Object error)? isTerminal;
+
   /// Creates a node configuration.
   NodeConfig({
     required this.hubUri,
@@ -170,6 +214,11 @@ class NodeConfig {
     this.registerPayload,
     this.onRegistered,
     this.onHandshake,
+    this.heartbeatPayload,
+    this.pingInterval,
+    this.connect,
+    this.isTerminal,
+    this.descriptorBuilder,
   }) : reconnect = reconnect ?? ReconnectPolicy();
 
   /// The descriptor advertised at registration.
@@ -181,6 +230,11 @@ class NodeConfig {
     attributes: attributes,
     agentVersion: agentVersion,
   );
+
+  /// The descriptor for this connection attempt: [descriptorBuilder]'s, or the
+  /// static [descriptor].
+  Future<NodeDescriptor> buildDescriptor() async =>
+      await descriptorBuilder?.call() ?? descriptor;
 }
 
 /// A remote participant that connects out to a hub, registers, heartbeats, and
@@ -222,6 +276,8 @@ class NodeRuntime {
   Timer? _heartbeatTimer;
   int _heartbeatSeq = 0;
   bool _stopped = false;
+  bool _terminated = false;
+  Object? _terminalError;
   Future<void>? _loop;
 
   /// Creates a node runtime.
@@ -246,6 +302,13 @@ class NodeRuntime {
   /// node has never completed one. Carries the hub id and any application
   /// payload the hub returned (see [NodeConfig.registerPayload]).
   NodeRegistered? get registration => _registration;
+
+  /// The failure that ended the runtime, if [NodeConfig.isTerminal] judged one
+  /// unrecoverable. `null` when the node is running, or was stopped by [stop].
+  ///
+  /// A node in [NodeState.stopped] with a non-null `terminalError` gave up; one
+  /// with `null` was shut down deliberately.
+  Object? get terminalError => _terminalError;
 
   /// Revises what this node advertises, without re-registering.
   ///
@@ -312,6 +375,21 @@ class NodeRuntime {
     }
   }
 
+  /// Pushes a one-way [NodeNotify] to the hub — no correlation id, no reply.
+  ///
+  /// The fire-and-forget half of the node→hub channel, for telemetry the hub
+  /// consumes but does not answer (log batches, status snapshots, progress).
+  /// The hub dispatches it to `NodeGateway.onNotify`.
+  ///
+  /// Delivery is best-effort: a notify sent while the node is not [isReady] is
+  /// **dropped**, and one lost in a dropping connection is not retried. Use
+  /// [request] when the outcome matters.
+  void notify(String action, {Map<String, dynamic> payload = const {}}) {
+    final typed = _typed;
+    if (typed == null || _state != NodeState.ready || !typed.isOpen) return;
+    typed.send(NodeNotify(action, payload: payload));
+  }
+
   /// Discovers peer nodes via the hub (must be [isReady]).
   ///
   /// [capability] and [labels] use the hub's built-in flat matching. [filter] is
@@ -348,15 +426,19 @@ class NodeRuntime {
   }
 
   Future<void> _run() async {
-    while (!_stopped) {
+    while (!_stopped && !_terminated) {
       try {
         _setState(NodeState.connecting);
-        final socket = await WebSocketConnection.connect(
-          config.hubUri,
-          headers: config.headers,
-          securityContext: config.securityContext,
-          onBadCertificate: config.onBadCertificate,
-        );
+        final dial = config.connect;
+        final Connection socket = dial != null
+            ? await dial()
+            : await WebSocketConnection.connect(
+                config.hubUri,
+                headers: config.headers,
+                securityContext: config.securityContext,
+                onBadCertificate: config.onBadCertificate,
+                pingInterval: config.pingInterval,
+              );
 
         // In-band handshake (if any) runs on the raw connection before any
         // control message. HandshakeConnection owns the single subscription and
@@ -385,7 +467,9 @@ class NodeRuntime {
         );
 
         final payload = await config.registerPayload?.call() ?? const {};
-        typed.send(NodeRegister(config.descriptor, payload: payload));
+        typed.send(
+          NodeRegister(await config.buildDescriptor(), payload: payload),
+        );
         final ack = await registered.future.timeout(config.registerTimeout);
         _registration = ack;
         await config.onRegistered?.call(ack);
@@ -401,7 +485,17 @@ class NodeRuntime {
         await conn.done;
         await sub.cancel();
       } on Object catch (e) {
-        logger.warn('Node connection failed', context: {'error': '$e'});
+        if (config.isTerminal?.call(e) ?? false) {
+          // Retrying cannot fix this one; stop rather than hammer the hub.
+          _terminated = true;
+          _terminalError = e;
+          logger.error(
+            'Node stopped: unrecoverable failure',
+            context: {'error': '$e'},
+          );
+        } else {
+          logger.warn('Node connection failed', context: {'error': '$e'});
+        }
       } finally {
         _stopHeartbeat();
         _failPending('Node lost its connection to the hub');
@@ -409,7 +503,7 @@ class NodeRuntime {
         _typed = null;
       }
 
-      if (_stopped) break;
+      if (_stopped || _terminated) break;
       _setState(NodeState.backoff);
       await Future<void>.delayed(config.reconnect.nextDelay());
     }
@@ -431,6 +525,21 @@ class NodeRuntime {
         _pendingRequests.remove(requestId)?.complete(decoded);
       case NodeErrorMessage(:final code, :final message):
         logger.warn('Hub error', context: {'code': code, 'message': message});
+      case NodeNotify(:final action, :final payload):
+        // Hub → node one-way push. Reuses the RPC handler with no reply sent, so
+        // an application registers a single action table for both directions.
+        final handler = config.onRequest;
+        if (handler != null) {
+          unawaited(
+            handler(action, payload).catchError((Object e) {
+              logger.warn(
+                'Notify handler failed',
+                context: {'action': action, 'error': '$e'},
+              );
+              return const <String, dynamic>{};
+            }),
+          );
+        }
       case NodeRegister() ||
           NodeUpdate() ||
           Heartbeat() ||
@@ -473,12 +582,31 @@ class NodeRuntime {
 
   void _startHeartbeat(Duration interval) {
     _stopHeartbeat();
-    _heartbeatTimer = Timer.periodic(interval, (_) {
-      final typed = _typed;
-      if (typed != null && typed.isOpen) {
-        typed.send(Heartbeat(++_heartbeatSeq));
+    _heartbeatTimer = Timer.periodic(interval, (_) => unawaited(_beat()));
+  }
+
+  /// Sends one heartbeat, with [NodeConfig.heartbeatPayload] attached if the
+  /// application supplies one.
+  ///
+  /// A payload builder that throws or stalls must not cost the node its
+  /// liveness, so a failure is logged and the beat goes out empty.
+  Future<void> _beat() async {
+    if (_typed?.isOpen != true) return;
+
+    var payload = const <String, dynamic>{};
+    final builder = config.heartbeatPayload;
+    if (builder != null) {
+      try {
+        payload = await builder();
+      } on Object catch (e) {
+        logger.warn('Heartbeat payload failed', context: {'error': '$e'});
       }
-    });
+    }
+
+    // Re-read: the connection may have dropped while the payload was building.
+    final typed = _typed;
+    if (typed == null || !typed.isOpen) return;
+    typed.send(Heartbeat(++_heartbeatSeq, payload: payload));
   }
 
   void _stopHeartbeat() {
