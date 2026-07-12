@@ -73,8 +73,12 @@ See the full API docs at [pub.dev/documentation/omnyhub][api_doc].
   SNI, so `foo.example.com`, `bar.example.com`, … are provisioned as they are
   first used, with no code change per domain.
 - **Node infrastructure.** A generic control plane for node registration,
-  discovery (by capability/label), authentication, capabilities, metadata,
-  health monitoring, lifecycle and RPC — with reconnection and backoff.
+  discovery, authentication, capabilities, metadata, health monitoring and
+  lifecycle — with reconnection and backoff. **RPC runs in both directions**
+  (hub→node and node→hub); registration carries an application payload and is
+  vetted by an `onRegister` hook, so a hub can *enrol* nodes (submit a CSR, get a
+  signed certificate back); and discovery extends past flat capability/label
+  matching via `NodeDescriptor.attributes` + a `NodeMatcher`.
 - **Pluggable authentication & authorization.** Bearer, Basic and composite
   authenticators; role-based and predicate authorizers; all fail-closed.
 - **Strong typing & clear APIs.** `abstract interface class` ports, `sealed`

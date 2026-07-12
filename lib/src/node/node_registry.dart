@@ -53,6 +53,9 @@ enum NodeEventKind {
   /// A node was removed (goodbye or disconnect).
   removed,
 
+  /// A node revised the descriptor it advertises.
+  updated,
+
   /// A node was marked offline by the heartbeat monitor.
   timedOut,
 }
@@ -153,14 +156,32 @@ class NodeRegistry {
     _emit(NodeEventKind.timedOut, node.descriptor);
   }
 
+  /// Replaces the descriptor of node [id], preserving its connection and
+  /// liveness bookkeeping. No-op if the node is unknown.
+  ///
+  /// Lets a node revise what it advertises (capabilities, labels, attributes)
+  /// without re-registering. The [NodeStatus] is carried over from the existing
+  /// record — liveness is the hub's to decide, not the node's.
+  void updateDescriptor(NodeId id, NodeDescriptor descriptor) {
+    final node = _byId[id.value];
+    if (node == null) return;
+    node.descriptor = descriptor.copyWith(status: node.descriptor.status);
+    _emit(NodeEventKind.updated, node.descriptor);
+  }
+
   /// Returns descriptors matching the given filter.
   ///
   /// Filters by [capability] (if given), [labels] (all must match) and, when
   /// [onlineOnly] is true (the default), excludes offline nodes. Results are
   /// sorted by id for determinism.
+  ///
+  /// [where] is an additional application predicate, applied after the built-in
+  /// filters — use it for query semantics the registry cannot know about
+  /// (version ranges, nested catalogues in [NodeDescriptor.attributes]).
   List<NodeDescriptor> discover({
     String? capability,
     Map<String, String> labels = const {},
+    bool Function(NodeDescriptor descriptor)? where,
     bool onlineOnly = true,
   }) {
     final result = <NodeDescriptor>[];
@@ -169,6 +190,7 @@ class NodeRegistry {
       if (onlineOnly && d.status != NodeStatus.online) continue;
       if (capability != null && !d.hasCapability(capability)) continue;
       if (!d.matchesLabels(labels)) continue;
+      if (where != null && !where(d)) continue;
       result.add(d);
     }
     result.sort((a, b) => a.id.value.compareTo(b.id.value));

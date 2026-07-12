@@ -1,3 +1,60 @@
+## 1.2.0
+
+Control-plane release — the node protocol grows the pieces an application needs
+to run a real HUB/Node infrastructure on it (enrolment, node-initiated calls,
+domain-specific discovery) instead of only the "worker node" shape. Fully
+backward-compatible (additive): every new field is omitted from the wire when
+empty and every new hook defaults to `null`, so existing peers and callers are
+unaffected.
+
+### Added
+
+- **Bidirectional RPC.** `request`/`response` now flow in both directions. A node
+  calls the hub with `NodeRuntime.request(action, payload:)`, answered by the
+  hub's new `NodeGateway.onRequest` handler — which receives the calling
+  `RegisteredNode`, so the hub knows who is asking and can authorize on its
+  `principal`. Registration is a precondition: a request from a connection that
+  has not registered is rejected (`error: "Not registered"`) without reaching the
+  handler. The existing hub→node direction (`NodeGateway.request`) is unchanged.
+  Previously the only node-initiated message was `query`, so an application
+  needed a second channel back to the hub.
+- **Enrolment.** `NodeRegister` and `NodeRegistered` carry a
+  `Map<String, dynamic> payload`, and `NodeGateway.onRegister` vets registrations
+  — returning the ack payload, or throwing a `HubException` to **reject** (the
+  hub replies `error`, closes, and never registers the node). Node-side:
+  `NodeConfig.registerPayload` / `NodeConfig.onRegistered` and
+  `NodeRuntime.registration`. This is the seam for CA-style enrolment: submit a
+  CSR, get a signed certificate back.
+- **Node-side in-band handshake.** `NodeConfig.onHandshake` runs on the raw
+  connection before registering — the counterpart of the hub's existing
+  `ConnectionAuthenticator`, so a node can now answer a challenge/response or
+  key-agreement exchange. Unconsumed frames are replayed to the control protocol.
+- **Application-defined discovery.** `NodeDescriptor.attributes`
+  (`Map<String, dynamic>`, may nest — unlike the flat string-only `labels` and
+  `metadata`), `NodeQuery.filter`, and the `NodeMatcher` port, so an application
+  owns query semantics the hub cannot know about (version ranges, nested service
+  catalogues). `NodeRegistry.discover` takes a `where` predicate.
+- **`NodeUpdate`** (`t: "update"`) — a node revises its advertised descriptor
+  without re-registering (`NodeRuntime.updateDescriptor`,
+  `NodeRegistry.updateDescriptor`, `NodeEventKind.updated`).
+- `Json.optObject` for reading free-form JSON object fields.
+
+### Changed
+
+- `NodeGateway.codec` and `NodeRuntime.codec` are now typed
+  `ConnectionCodec<NodeControlMessage>` rather than the concrete `MessageCodec`,
+  so an application can supply its own wire format (e.g. binary) without forking
+  either endpoint. `MessageCodec.standard()` remains the default; source-
+  compatible for existing callers.
+
+### Fixed
+
+- **In-flight RPCs no longer hang when a connection drops.** `NodeGateway` and
+  `NodeRuntime` now fail their pending calls with `NodeUnavailableException` on
+  disconnect, goodbye and heartbeat timeout, instead of leaving callers to wait
+  out their own timeout. `NodeRuntime`'s pending discovery queries were leaked on
+  disconnect and are now cleared too.
+
 ## 1.1.0
 
 Synergy release — shared primitives that let protocol-oriented apps (like
