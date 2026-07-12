@@ -11,7 +11,8 @@ import '../../shared/errors/hub_exception.dart';
 import 'tls_provider.dart';
 
 /// Decides whether an on-demand certificate may be requested for [host].
-typedef DomainPolicy = bool Function(String host);
+/// May be asynchronous (e.g. a per-tenant database or API lookup).
+typedef DomainPolicy = FutureOr<bool> Function(String host);
 
 /// Resolves the ACME contact email to use for an on-demand certificate for
 /// [host]. May be asynchronous (e.g. a database lookup per tenant).
@@ -89,10 +90,23 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
   /// different email for each domain. Takes precedence over [onDemandEmail].
   final EmailResolver? onDemandEmailResolver;
 
+  /// Whether a missing certificate may be requested from the CA.
+  ///
+  /// When `false`, only certificates already present in [cacheDir] are served
+  /// and the CA is never contacted — for a deployment whose certificates are
+  /// provisioned out-of-band.
+  final bool autoIssue;
+
+  /// Hosts a previous [obtain] rejected, so a repeated TLS handshake does not
+  /// re-invoke a (possibly expensive, possibly async) [allowDomain] policy.
+  /// Bounded: an SNI flood of random hostnames must not grow it without limit.
+  static const _maxDenied = 1024;
+
   final CertificatesHandlerIO _certificates;
   final LetsEncrypt _letsEncrypt;
   final Map<String, SecurityContext> _contexts = {};
   final Map<String, Future<bool>> _inFlight = {};
+  final Set<String> _denied = {};
   SecurityContext? _default;
 
   LetsEncryptTls._(
@@ -103,6 +117,7 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
     this.allowDomain,
     this.onDemandEmail,
     this.onDemandEmailResolver,
+    this.autoIssue,
     this._certificates,
     this._letsEncrypt,
   );
@@ -113,6 +128,9 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
   /// on-demand issuance, or both. On-demand issuance requires a contact email:
   /// a fixed [onDemandEmail], or an [onDemandEmailResolver] to resolve it per
   /// host (e.g. a per-tenant lookup).
+  ///
+  /// Set [autoIssue] to `false` to serve only certificates already cached in
+  /// [cacheDir], never contacting the CA.
   factory LetsEncryptTls({
     List<Domain> domains = const [],
     DomainPolicy? allowDomain,
@@ -120,6 +138,7 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
     EmailResolver? onDemandEmailResolver,
     required String cacheDir,
     bool production = false,
+    bool autoIssue = true,
     int challengePort = 80,
     int securePort = 443,
   }) {
@@ -151,6 +170,7 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
       allowDomain,
       onDemandEmail,
       onDemandEmailResolver,
+      autoIssue,
       certificates,
       letsEncrypt,
     );
@@ -162,12 +182,14 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
     String email, {
     required String cacheDir,
     bool production = false,
+    bool autoIssue = true,
     int challengePort = 80,
     int securePort = 443,
   }) => LetsEncryptTls(
     domains: [Domain(name: domain, email: email)],
     cacheDir: cacheDir,
     production: production,
+    autoIssue: autoIssue,
     challengePort: challengePort,
     securePort: securePort,
   );
@@ -185,6 +207,7 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
     EmailResolver? emailResolver,
     List<Domain> domains = const [],
     bool production = false,
+    bool autoIssue = true,
     int challengePort = 80,
     int securePort = 443,
   }) => LetsEncryptTls(
@@ -194,6 +217,7 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
     onDemandEmailResolver: emailResolver,
     cacheDir: cacheDir,
     production: production,
+    autoIssue: autoIssue,
     challengePort: challengePort,
     securePort: securePort,
   );
@@ -202,11 +226,15 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
   bool get isOnDemand => allowDomain != null;
 
   /// Whether [host] may be served (a seed domain or allowed by the policy).
-  bool isAllowed(String host) {
+  ///
+  /// [allowDomain] may be asynchronous, so this is too. It is consulted only
+  /// from [obtain] — never from the synchronous SNI path ([contextFor]).
+  Future<bool> isAllowed(String host) async {
     final normalized = host.toLowerCase();
     if (domains.any((d) => d.name.toLowerCase() == normalized)) return true;
     final policy = allowDomain;
-    return policy != null && policy(normalized);
+    if (policy == null) return false;
+    return await policy(normalized);
   }
 
   @override
@@ -221,10 +249,12 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
     final normalized = host.toLowerCase();
     final cached = _contexts[normalized];
     if (cached != null) return cached;
-    // Unknown but allowed host: provision in the background for next time.
-    // Swallow errors here (e.g. a throwing email resolver) so they never
-    // surface as an unhandled async error during a TLS handshake.
-    if (isAllowed(normalized) && !_inFlight.containsKey(normalized)) {
+    // Unknown host: provision in the background for next time. The allow-check
+    // is async, so it cannot run here (SNI resolution must be synchronous) —
+    // `obtain` performs it. `_denied` keeps a rejected host from re-invoking
+    // the policy on every handshake. Swallow errors (e.g. a throwing email
+    // resolver) so they never surface as an unhandled async error mid-handshake.
+    if (!_inFlight.containsKey(normalized) && !_denied.contains(normalized)) {
       unawaited(obtain(normalized).catchError((Object _) => false));
     }
     return _default;
@@ -264,15 +294,26 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
   /// Ensures a certificate exists for [host] (provisioning it if allowed and
   /// missing) and caches its [SecurityContext]. Returns whether a certificate is
   /// available afterwards. Concurrent calls for the same host are de-duplicated.
+  // Deliberately not `async`: `_inFlight` must be populated synchronously,
+  // before the first suspension, or concurrent handshakes for the same host
+  // would each start their own provisioning.
   Future<bool> obtain(String host) {
     final normalized = host.toLowerCase();
     if (_contexts.containsKey(normalized)) return Future.value(true);
-    if (!isAllowed(normalized)) return Future.value(false);
     final existing = _inFlight[normalized];
     if (existing != null) return existing;
-    final future = _provisionHost(normalized);
+    final future = _obtain(normalized);
     _inFlight[normalized] = future;
     return future.whenComplete(() => _inFlight.remove(normalized));
+  }
+
+  Future<bool> _obtain(String host) async {
+    if (!await isAllowed(host)) {
+      if (_denied.length >= _maxDenied) _denied.clear();
+      _denied.add(host);
+      return false;
+    }
+    return _provisionHost(host);
   }
 
   @override
@@ -289,6 +330,8 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
 
   @override
   Future<bool> maybeRenew() async {
+    // Certificates are provisioned out-of-band: never contact the CA.
+    if (!autoIssue) return false;
     var refreshed = false;
     final hosts = <String>{
       ...domains.map((d) => d.name.toLowerCase()),
@@ -316,6 +359,9 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
   Future<bool> _provisionHost(String host) async {
     final domain = await _domainFor(host);
     if (!_certificates.isHandledDomainCertificate(host)) {
+      // No cached certificate: request one, unless issuance is disabled — then
+      // this host is simply not served.
+      if (!autoIssue) return false;
       final ok = await _letsEncrypt.requestCertificate(domain);
       if (!ok) return false;
     }

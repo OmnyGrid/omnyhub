@@ -1,3 +1,47 @@
+## 1.4.0
+
+On-demand TLS release — the seams an application needs to decide *its own way*
+whether a host may be certified, rather than reimplementing the SNI cache and
+issuance around `LetsEncryptTls`. Driven by adopting omnyhub in MenuIci's
+`sites_server`, whose front door had grown a parallel copy of both.
+
+Additive and backward-compatible: `DomainPolicy` is *widened*, so existing
+synchronous policies still satisfy it, and `autoIssue` defaults to the 1.3.0
+behaviour. Verified by running the full suite unmodified against this release.
+
+### Added
+
+- **Asynchronous domain policy.** `DomainPolicy` is now
+  `FutureOr<bool> Function(String host)` (was `bool Function(String host)`), so
+  on-demand issuance can be gated by a real lookup — a database query, a tenant
+  API call — instead of only what is knowable synchronously. Previously an
+  application whose "may this host be certified?" answer lived behind I/O had to
+  keep a hand-rolled cache beside the hub and pre-warm it, which is exactly the
+  duplication `allowDomain` exists to remove. Existing sync policies are
+  unaffected: `bool` is a subtype of `FutureOr<bool>`.
+- **`LetsEncryptTls.autoIssue`.** When `false`, only certificates already cached
+  in `cacheDir` are served and the CA is never contacted — neither on a
+  handshake miss nor from the renewal loop. For a deployment whose certificates
+  are provisioned out-of-band (certbot, a secrets mount, a sibling process),
+  which previously could not be expressed through this provider at all.
+
+### Changed
+
+- **`LetsEncryptTls.isAllowed` returns `Future<bool>`.** It awaits the policy.
+  The synchronous SNI path (`TlsProvider.contextFor`, which cannot await) no
+  longer calls it: `contextFor` now schedules `obtain()` in the background, and
+  `obtain()` is the single place the policy is evaluated. The only breaking
+  change, and only for code calling `isAllowed` directly.
+- **A rejected host is no longer re-checked on every handshake.** With a sync
+  policy the pre-check in `contextFor` was free; with an async one it could be
+  an HTTP call per TLS handshake. Rejections are now remembered in a bounded
+  cache (capped, so an SNI flood of random hostnames cannot grow it without
+  limit).
+- **`obtain()` stays de-duplicated under an async policy.** It registers its
+  in-flight future *before* the first suspension, so concurrent handshakes for
+  the same host still share one provisioning attempt now that the allow-check
+  can itself suspend.
+
 ## 1.3.0
 
 Control-plane release — the seams an application needs to host its *own* node

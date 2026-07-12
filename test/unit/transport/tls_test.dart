@@ -93,23 +93,85 @@ void main() {
         );
       });
 
-      test('policy allows matching hosts, rejects others', () {
-        expect(tls.isAllowed('foo.example.com'), isTrue);
-        expect(tls.isAllowed('BAR.example.com'), isTrue); // case-insensitive
-        expect(tls.isAllowed('evil.test'), isFalse);
+      test('policy allows matching hosts, rejects others', () async {
+        expect(await tls.isAllowed('foo.example.com'), isTrue);
+        expect(await tls.isAllowed('BAR.example.com'), isTrue); // case-insens.
+        expect(await tls.isAllowed('evil.test'), isFalse);
       });
 
-      test('seed domains are always allowed even without a policy match', () {
-        final seeded = LetsEncryptTls(
-          domains: [Domain(name: 'fixed.org', email: 'a@b.c')],
-          allowDomain: (host) => host.endsWith('.example.com'),
-          onDemandEmail: 'ops@example.com',
+      test(
+        'seed domains are always allowed even without a policy match',
+        () async {
+          final seeded = LetsEncryptTls(
+            domains: [Domain(name: 'fixed.org', email: 'a@b.c')],
+            allowDomain: (host) => host.endsWith('.example.com'),
+            onDemandEmail: 'ops@example.com',
+            cacheDir: cache.path,
+          );
+          expect(await seeded.isAllowed('fixed.org'), isTrue);
+          expect(await seeded.isAllowed('x.example.com'), isTrue);
+          expect(await seeded.isAllowed('other.net'), isFalse);
+        },
+      );
+
+      test('accepts an asynchronous allowDomain policy', () async {
+        final queried = <String>[];
+        final async = LetsEncryptTls.onDemand(
+          email: 'ops@example.com',
+          allowDomain: (host) async {
+            queried.add(host);
+            await Future.delayed(Duration.zero);
+            return host.startsWith('tenant-');
+          },
           cacheDir: cache.path,
         );
-        expect(seeded.isAllowed('fixed.org'), isTrue);
-        expect(seeded.isAllowed('x.example.com'), isTrue);
-        expect(seeded.isAllowed('other.net'), isFalse);
+
+        expect(await async.isAllowed('tenant-a.example.com'), isTrue);
+        expect(await async.isAllowed('evil.test'), isFalse);
+        expect(queried, ['tenant-a.example.com', 'evil.test']);
       });
+
+      test('a rejected host is not re-checked on every handshake', () async {
+        var calls = 0;
+        final counting = LetsEncryptTls.onDemand(
+          email: 'ops@example.com',
+          allowDomain: (host) async {
+            calls++;
+            return false;
+          },
+          cacheDir: cache.path,
+        );
+
+        // The SNI resolver schedules the (async) allow-check in the background.
+        expect(counting.contextFor('evil.test'), isNull);
+        await pumpEventQueue();
+        expect(calls, 1);
+
+        // Subsequent handshakes for the same rejected host are free.
+        expect(counting.contextFor('evil.test'), isNull);
+        expect(counting.contextFor('evil.test'), isNull);
+        await pumpEventQueue();
+        expect(calls, 1);
+      });
+
+      test(
+        'autoIssue: false never contacts the CA for an uncached host',
+        () async {
+          final offline = LetsEncryptTls.onDemand(
+            email: 'ops@example.com',
+            allowDomain: (_) => true,
+            cacheDir: cache.path,
+            autoIssue: false,
+          );
+
+          // Allowed by policy, but with no certificate in the cache dir there is
+          // nothing to serve — and no ACME request is attempted (which would
+          // fail/hang against a real CA in a unit test).
+          expect(await offline.obtain('foo.example.com'), isFalse);
+          expect(offline.contextFor('foo.example.com'), isNull);
+          expect(await offline.maybeRenew(), isFalse);
+        },
+      );
 
       test(
         'contextFor returns null for an uncached host and does not throw',
