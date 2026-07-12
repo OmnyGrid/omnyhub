@@ -6,11 +6,16 @@ import 'node_descriptor.dart';
 /// A control-plane message exchanged between a node and a hub over the WebSocket
 /// control connection.
 ///
-/// The hierarchy is `sealed` so dispatch code can switch exhaustively. Each
-/// concrete type declares a wire [type] name and hand-written
+/// The hierarchy is `sealed` so `NodeGateway` and `NodeRuntime` can switch
+/// exhaustively. Each concrete type declares a wire [type] name and hand-written
 /// [toJson]/`fromJson` (no code generation), matching the ecosystem convention.
-/// New message types can be added by third parties and registered with a
-/// `MessageCodec`.
+///
+/// Being `sealed`, this hierarchy is **closed to other libraries**: an
+/// application cannot add its own message types, and `MessageCodec.register`
+/// only remaps a wire string onto one of the built-ins. Carry an application
+/// protocol over the control channel with [NodeRequest]/[NodeResponse] (call and
+/// response) or [NodeNotify] (one-way push), whose `action` + `payload` are
+/// yours to define.
 @immutable
 sealed class NodeControlMessage {
   const NodeControlMessage();
@@ -130,18 +135,32 @@ final class Heartbeat extends NodeControlMessage {
   /// The monotonic sequence number.
   final int seq;
 
+  /// Application data piggy-backed on the beat (e.g. a resource-metrics
+  /// snapshot), produced by [NodeConfig.heartbeatPayload] and consumed by the
+  /// gateway's `onHeartbeat` hook.
+  ///
+  /// The hub's own liveness bookkeeping ignores it. Riding the heartbeat avoids
+  /// a second periodic message for telemetry a node already reports on the same
+  /// cadence; keep it small, since it is sent on every beat.
+  final Map<String, dynamic> payload;
+
   /// Creates a heartbeat with sequence [seq].
-  const Heartbeat(this.seq);
+  const Heartbeat(this.seq, {this.payload = const {}});
 
   @override
   String get type => typeName;
 
   @override
-  Map<String, dynamic> toJson() => {'seq': seq};
+  Map<String, dynamic> toJson() => {
+    'seq': seq,
+    if (payload.isNotEmpty) 'payload': payload,
+  };
 
   /// Decodes from [json].
-  static Heartbeat fromJson(Map<String, dynamic> json) =>
-      Heartbeat(Json.requireInt(json, 'seq'));
+  static Heartbeat fromJson(Map<String, dynamic> json) => Heartbeat(
+    Json.requireInt(json, 'seq'),
+    payload: Json.optObject(json, 'payload'),
+  );
 }
 
 /// Hub → node: acknowledge a [Heartbeat].
@@ -329,6 +348,42 @@ final class NodeResponse extends NodeControlMessage {
     ok: Json.optBool(json, 'ok', fallback: true),
     payload: json['payload'] is Map ? Json.asObject(json['payload']) : const {},
     error: Json.optString(json, 'error'),
+  );
+}
+
+/// Either direction: a one-way, fire-and-forget application message.
+///
+/// The counterpart of [NodeRequest]: same `action` + `payload` shape, but no
+/// correlation id and no reply. Use it for unsolicited pushes where a response
+/// would be pure overhead — a node streaming log batches or status snapshots up
+/// to the hub, a hub broadcasting a configuration change down to a node.
+///
+/// A dropped notify is not retried and not reported. Anything that needs an
+/// answer, an acknowledgement, or delivery confirmation belongs in
+/// [NodeRequest]/[NodeResponse] instead.
+@immutable
+final class NodeNotify extends NodeControlMessage {
+  static const typeName = 'notify';
+
+  /// The application-defined action name.
+  final String action;
+
+  /// The notification payload.
+  final Map<String, dynamic> payload;
+
+  /// Creates a one-way notification.
+  const NodeNotify(this.action, {this.payload = const {}});
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {'action': action, 'payload': payload};
+
+  /// Decodes from [json].
+  static NodeNotify fromJson(Map<String, dynamic> json) => NodeNotify(
+    Json.requireString(json, 'action'),
+    payload: json['payload'] is Map ? Json.asObject(json['payload']) : const {},
   );
 }
 

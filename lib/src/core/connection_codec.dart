@@ -33,14 +33,25 @@ class TypedConnection<T> {
   /// The codec applied at the boundary.
   final ConnectionCodec<T> codec;
 
+  /// Called for each inbound message the [codec] rejects, instead of dropping it
+  /// silently.
+  ///
+  /// Dropping is deliberate — a peer must not be able to tear the connection
+  /// down by sending one bad frame — but it is also invisible, which hides
+  /// version skew and codec bugs. Supply this to log or count what was
+  /// discarded. The message is dropped either way; throwing from here does not
+  /// surface it.
+  final void Function(Object error, Message message)? onDecodeError;
+
   /// Wraps [connection] with [codec].
-  const TypedConnection(this.connection, this.codec);
+  const TypedConnection(this.connection, this.codec, {this.onDecodeError});
 
   /// Inbound decoded values; undecodable messages are skipped.
   Stream<T> get incoming => connection.incoming.expand((message) {
     try {
       return [codec.decode(message)];
-    } on Object {
+    } on Object catch (e) {
+      onDecodeError?.call(e, message);
       return const [];
     }
   });

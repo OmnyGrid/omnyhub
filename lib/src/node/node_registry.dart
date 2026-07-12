@@ -30,6 +30,15 @@ class RegisteredNode {
   /// Number of sessions currently routed to this node (application-maintained).
   int activeSessions;
 
+  /// Scratch space for application-owned per-node state, keyed by the
+  /// application (e.g. the last resource-metrics snapshot, a lease, a scheduler
+  /// cursor).
+  ///
+  /// The registry constructs [RegisteredNode] itself, so subclassing it to add
+  /// fields does not work — this bag is the seam instead. Nothing in omnyhub
+  /// reads or writes it; entries live and die with the registration.
+  final Map<String, Object?> state = {};
+
   /// Creates a registered-node record.
   RegisteredNode({
     required this.descriptor,
@@ -58,6 +67,10 @@ enum NodeEventKind {
 
   /// A node was marked offline by the heartbeat monitor.
   timedOut,
+
+  /// A node's connection dropped and its record was retained (marked offline
+  /// rather than removed). Only emitted when the gateway retains nodes.
+  disconnected,
 }
 
 /// An observable change in the [NodeRegistry].
@@ -68,8 +81,16 @@ class NodeEvent {
   /// The affected node's descriptor.
   final NodeDescriptor descriptor;
 
+  /// The affected registration, when the subscriber needs more than the
+  /// descriptor — its [RegisteredNode.connection], [RegisteredNode.principal] or
+  /// [RegisteredNode.state].
+  ///
+  /// Present for every event the registry emits; nullable so the const
+  /// two-argument constructor keeps working.
+  final RegisteredNode? node;
+
   /// Creates a node event.
-  const NodeEvent(this.kind, this.descriptor);
+  const NodeEvent(this.kind, this.descriptor, [this.node]);
 }
 
 /// Tracks the nodes registered with the hub and answers discovery queries.
@@ -118,7 +139,7 @@ class NodeRegistry {
       connectionId: connectionId,
     );
     _byId[descriptor.id.value] = node;
-    _emit(NodeEventKind.registered, node.descriptor);
+    _emit(NodeEventKind.registered, node);
     return node;
   }
 
@@ -144,16 +165,30 @@ class NodeRegistry {
   /// Removes node [id], returning the removed record (or `null`).
   RegisteredNode? remove(NodeId id) {
     final node = _byId.remove(id.value);
-    if (node != null) _emit(NodeEventKind.removed, node.descriptor);
+    if (node != null) _emit(NodeEventKind.removed, node);
     return node;
   }
 
-  /// Marks node [id] offline (used by the heartbeat monitor).
-  void markTimedOut(NodeId id) {
+  /// Marks node [id] offline because it stopped heartbeating (used by the
+  /// heartbeat monitor).
+  ///
+  /// The record is kept, so an application that tracks node history can leave
+  /// timed-out nodes in place rather than [remove]ing them. They are excluded
+  /// from [discover] while `onlineOnly` is set.
+  void markTimedOut(NodeId id) => _markOffline(id, NodeEventKind.timedOut);
+
+  /// Marks node [id] offline because its connection dropped, keeping the record.
+  ///
+  /// The retaining counterpart of [remove]: same effect on [discover], but the
+  /// node stays queryable by [byId] so its history and last-known descriptor
+  /// survive the disconnect.
+  void markOffline(NodeId id) => _markOffline(id, NodeEventKind.disconnected);
+
+  void _markOffline(NodeId id, NodeEventKind kind) {
     final node = _byId[id.value];
     if (node == null) return;
     node.descriptor = node.descriptor.copyWith(status: NodeStatus.offline);
-    _emit(NodeEventKind.timedOut, node.descriptor);
+    _emit(kind, node);
   }
 
   /// Replaces the descriptor of node [id], preserving its connection and
@@ -166,7 +201,7 @@ class NodeRegistry {
     final node = _byId[id.value];
     if (node == null) return;
     node.descriptor = descriptor.copyWith(status: node.descriptor.status);
-    _emit(NodeEventKind.updated, node.descriptor);
+    _emit(NodeEventKind.updated, node);
   }
 
   /// Returns descriptors matching the given filter.
@@ -200,7 +235,9 @@ class NodeRegistry {
   /// Closes the event stream.
   Future<void> close() => _events.close();
 
-  void _emit(NodeEventKind kind, NodeDescriptor descriptor) {
-    if (!_events.isClosed) _events.add(NodeEvent(kind, descriptor));
+  void _emit(NodeEventKind kind, RegisteredNode node) {
+    if (!_events.isClosed) {
+      _events.add(NodeEvent(kind, node.descriptor, node));
+    }
   }
 }

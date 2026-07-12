@@ -44,6 +44,38 @@ abstract interface class Logger {
   Logger child(Map<String, Object?> context);
 }
 
+/// Derives a [Logger]'s four severity conveniences from [log], so an adapter
+/// only implements [log] and [child].
+///
+/// ```dart
+/// class PrintLogger with LoggerBase {
+///   @override
+///   void log(LogLevel level, String message,
+///           {Map<String, Object?> context = const {}}) =>
+///       print('[${level.name}] $message $context');
+///
+///   @override
+///   Logger child(Map<String, Object?> context) => this;
+/// }
+/// ```
+mixin LoggerBase implements Logger {
+  @override
+  void debug(String message, {Map<String, Object?> context = const {}}) =>
+      log(LogLevel.debug, message, context: context);
+
+  @override
+  void info(String message, {Map<String, Object?> context = const {}}) =>
+      log(LogLevel.info, message, context: context);
+
+  @override
+  void warn(String message, {Map<String, Object?> context = const {}}) =>
+      log(LogLevel.warn, message, context: context);
+
+  @override
+  void error(String message, {Map<String, Object?> context = const {}}) =>
+      log(LogLevel.error, message, context: context);
+}
+
 /// A [Logger] that discards everything. The default throughout the framework.
 class NoopLogger implements Logger {
   /// Creates a no-op logger.
@@ -74,7 +106,7 @@ class NoopLogger implements Logger {
 
 /// A [Logger] that writes one JSON object per line to an [IOSink]
 /// (stderr by default), filtering records below [minLevel].
-class StructuredLogger implements Logger {
+class StructuredLogger with LoggerBase implements Logger {
   /// The sink records are written to.
   final IOSink sink;
 
@@ -107,22 +139,6 @@ class StructuredLogger implements Logger {
       }),
     );
   }
-
-  @override
-  void debug(String message, {Map<String, Object?> context = const {}}) =>
-      log(LogLevel.debug, message, context: context);
-
-  @override
-  void info(String message, {Map<String, Object?> context = const {}}) =>
-      log(LogLevel.info, message, context: context);
-
-  @override
-  void warn(String message, {Map<String, Object?> context = const {}}) =>
-      log(LogLevel.warn, message, context: context);
-
-  @override
-  void error(String message, {Map<String, Object?> context = const {}}) =>
-      log(LogLevel.error, message, context: context);
 
   @override
   Logger child(Map<String, Object?> context) => StructuredLogger(

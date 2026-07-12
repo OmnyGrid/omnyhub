@@ -31,14 +31,33 @@ packages may `register(type, decoder)` additional message types on top of
 | `register` | node → hub | Announce presence & capabilities | `descriptor`, `payload?` |
 | `registered` | hub → node | Acknowledge, advertise heartbeat interval | `hubId`, `heartbeatIntervalMs`, `payload?` |
 | `update` | node → hub | Revise the advertised descriptor | `descriptor` |
-| `heartbeat` | node → hub | Liveness ping | `seq` |
+| `heartbeat` | node → hub | Liveness ping, optionally carrying telemetry | `seq`, `payload?` |
 | `heartbeat_ack` | hub → node | Acknowledge a heartbeat | `seq` |
 | `query` | node → hub | Discover peers | `requestId`, `capability?`, `labels`, `filter?` |
 | `query_result` | hub → node | Discovery result | `requestId`, `nodes[]` |
 | `request` | **either** | Invoke an action (RPC) | `requestId`, `action`, `payload` |
 | `response` | **either** | RPC result | `requestId`, `ok`, `payload`, `error?` |
+| `notify` | **either** | One-way push, no reply | `action`, `payload` |
 | `goodbye` | node → hub | Graceful shutdown | `reason?` |
 | `error` | either | Protocol error | `code`, `message`, `requestId?` |
+
+### Carrying an application protocol
+
+`NodeControlMessage` is `sealed`: an application **cannot** add its own message
+types, and `MessageCodec.register` only remaps a wire string onto a built-in.
+Three seams carry an application protocol instead:
+
+- **`request`/`response`** — a call that needs an answer, in either direction.
+  The `action` string and `payload` object are yours. Correlation, timeouts and
+  failure-on-disconnect are handled for you.
+- **`notify`** — a push that needs no answer (log batches, progress, status).
+  Best-effort: a notify sent while disconnected is dropped and never retried.
+- **`heartbeat.payload`** — telemetry a node already reports on the heartbeat
+  cadence. Riding the beat avoids a second periodic message; it is ignored by the
+  hub's own liveness bookkeeping.
+
+Anything that must survive a disconnect belongs in `request`/`response`, not
+`notify`.
 
 Fields marked `?` are omitted from the wire when empty, so a peer that does not
 use them sees exactly the pre-1.2 message.
@@ -124,15 +143,26 @@ node                          hub (NodeGateway)
  |<== in-band handshake =======>|  optional: ConnectionAuthenticator / onHandshake
  |--- register(payload) ------->|  onRegister vets it (may reject -> error, close)
  |<-- registered(payload) ------|  NodeRegistry.register; advertise heartbeatIntervalMs
- |--- heartbeat(seq) ---------->|  recordHeartbeat; refresh lastSeen
+ |--- heartbeat(seq, payload) ->|  recordHeartbeat; refresh lastSeen; onHeartbeat
  |<-- heartbeat_ack(seq) -------|
  |          ...                 |  HeartbeatMonitor times out silent nodes
  |--- update(descriptor) ------>|  revise what is advertised (no re-register)
  |--- query ---> query_result ->|  discover peers (capability / labels / filter)
  |<-- request --- response ---->|  hub-initiated RPC   (NodeGateway.request)
  |--- request --- response ---->|  node-initiated RPC  (NodeRuntime.request)
+ |--- notify(action, payload) ->|  one-way push, no reply (NodeRuntime.notify)
+ |<-- notify(action, payload) --|  one-way push, no reply (NodeGateway.notify)
  |--- goodbye ----------------->|  remove from registry, close
 ```
+
+A node may pipeline: frames sent after `register` but before `registered` arrives
+are queued by the gateway and processed in order once registration settles (and
+discarded if it is rejected).
+
+By default a node that disconnects or times out is **removed** from the registry.
+Set `NodeGateway.retainNodes` to keep the record instead, marked offline — for a
+hub that is the system of record for a known fleet. Either way an offline node is
+excluded from discovery.
 
 If the connection drops, the hub removes the node from its registry; the node
 transitions through `backoff` and reconnects with exponential backoff

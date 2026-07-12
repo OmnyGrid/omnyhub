@@ -61,6 +61,43 @@ abstract interface class NodeMatcher {
   bool matches(NodeDescriptor node, Map<String, dynamic> filter);
 }
 
+/// Observes a [Heartbeat] from [node], after the gateway has recorded its
+/// liveness and acked it.
+///
+/// The seam for telemetry a node piggy-backs on the beat via
+/// [Heartbeat.payload] (a metrics snapshot, a queue depth). Keep it cheap — it
+/// runs on every beat of every node.
+typedef HeartbeatHandler = void Function(RegisteredNode node, Heartbeat beat);
+
+/// Handles a [NodeNotify] pushed by [from] — a one-way message with no reply.
+///
+/// The fire-and-forget counterpart of [HubActionHandler]. Like node→hub RPC,
+/// only registered nodes may push, so [from] is always a live registration.
+typedef NotifyHandler =
+    void Function(
+      String action,
+      Map<String, dynamic> payload,
+      RegisteredNode from,
+    );
+
+/// Observes a node's control connection opening, before it registers.
+///
+/// Fires for *every* accepted connection, including one that never sends
+/// [NodeRegister] — the registry's events cannot see those.
+typedef NodeConnectHandler =
+    void Function(Connection connection, HubRequest request);
+
+/// Observes a node's control connection closing, before the gateway disposes of
+/// the registration.
+///
+/// [node] is `null` if the connection dropped before it ever registered.
+typedef NodeDisconnectHandler =
+    void Function(RegisteredNode? node, Connection connection);
+
+/// Observes a node being dropped by the heartbeat monitor, before the gateway
+/// disposes of the registration.
+typedef NodeTimeoutHandler = void Function(RegisteredNode node);
+
 /// A hub→node RPC awaiting its [NodeResponse].
 class _PendingRpc {
   final NodeId nodeId;
@@ -131,6 +168,34 @@ class NodeGateway extends ServiceBase {
   /// discovery. When `null`, `filter` is ignored.
   final NodeMatcher? matcher;
 
+  /// Handles one-way [NodeNotify] pushes from nodes. When `null`, they are
+  /// discarded.
+  final NotifyHandler? onNotify;
+
+  /// Observes every [Heartbeat], after liveness is recorded and the ack is sent.
+  final HeartbeatHandler? onHeartbeat;
+
+  /// Observes a control connection opening (before registration).
+  final NodeConnectHandler? onConnect;
+
+  /// Observes a control connection closing (before the registration is
+  /// disposed of).
+  final NodeDisconnectHandler? onDisconnect;
+
+  /// Observes a node being dropped by the heartbeat monitor (before the
+  /// registration is disposed of).
+  final NodeTimeoutHandler? onTimeout;
+
+  /// Whether a node that disconnects or times out is kept in the registry,
+  /// marked offline, instead of being removed.
+  ///
+  /// `false` (the default) drops the record entirely: the registry only ever
+  /// holds live nodes. Set it when the hub is the system of record for a known
+  /// fleet — an offline node stays queryable by [NodeRegistry.byId] with its
+  /// last-known descriptor, and re-registers into the same slot when it returns.
+  /// Either way an offline node is excluded from [discover].
+  final bool retainNodes;
+
   final IdGenerator _ids;
   final bool _ownsRegistry;
   final Map<String, _PendingRpc> _pending = {};
@@ -149,6 +214,12 @@ class NodeGateway extends ServiceBase {
     this.onRequest,
     this.onRegister,
     this.matcher,
+    this.onNotify,
+    this.onHeartbeat,
+    this.onConnect,
+    this.onDisconnect,
+    this.onTimeout,
+    this.retainNodes = false,
     String? hubId,
     IdGenerator? idGenerator,
   }) : registry = registry ?? NodeRegistry(),
@@ -201,6 +272,23 @@ class NodeGateway extends ServiceBase {
     }
   }
 
+  /// Pushes a one-way [NodeNotify] to node [nodeId] — no correlation id, no
+  /// reply. The mirror of `NodeRuntime.notify`.
+  ///
+  /// Best-effort: returns `false` if the node is not connected, and a notify
+  /// lost in a dropping connection is not retried. Use [request] when the
+  /// outcome matters.
+  bool notify(
+    NodeId nodeId,
+    String action, {
+    Map<String, dynamic> payload = const {},
+  }) {
+    final node = registry.byId(nodeId);
+    if (node == null || !node.connection.isOpen) return false;
+    node.connection.send(codec.encode(NodeNotify(action, payload: payload)));
+    return true;
+  }
+
   /// Fails every in-flight RPC to [nodeId], so callers get a prompt
   /// [NodeUnavailableException] instead of hanging until their timeout when the
   /// node drops.
@@ -245,18 +333,30 @@ class NodeGateway extends ServiceBase {
   void handleConnection(Connection connection, HubRequest request) {
     RegisteredNode? node;
 
-    connection.incoming.listen((message) {
-      NodeControlMessage decoded;
-      try {
-        decoded = codec.decode(message);
-      } on HubException catch (e) {
-        connection.send(codec.encode(NodeErrorMessage(e.code, e.message)));
-        return;
-      }
+    // [onRegister] may do real async work (vetting a CSR, writing to a repo), and
+    // a node starts heartbeating the moment it is acked. Frames that land while
+    // registration is still settling are held here and replayed in order once it
+    // does — otherwise they would race an unset `node` and be dropped
+    // (Heartbeat, NodeUpdate) or refused as 'Not registered' (NodeRequest).
+    final backlog = <NodeControlMessage>[];
+    var registering = false;
 
+    void dispatch(NodeControlMessage decoded) {
       switch (decoded) {
         case NodeRegister():
-          unawaited(_register(decoded, connection, request, (n) => node = n));
+          // A second register on an already-registered connection re-admits the
+          // node; the registry replaces the record under the same id.
+          registering = true;
+          unawaited(
+            _register(decoded, connection, request).then((admitted) {
+              node = admitted;
+              registering = false;
+              final queued = List.of(backlog);
+              backlog.clear();
+              // A rejected registration has already closed the connection.
+              if (admitted != null) queued.forEach(dispatch);
+            }),
+          );
         case NodeUpdate(:final descriptor):
           final current = node;
           if (current != null) {
@@ -271,6 +371,7 @@ class NodeGateway extends ServiceBase {
               now: clock.now(),
             );
             connection.send(codec.encode(HeartbeatAck(seq)));
+            onHeartbeat?.call(current, decoded);
           }
         case NodeQuery(
           :final requestId,
@@ -290,14 +391,19 @@ class NodeGateway extends ServiceBase {
         case NodeRequest():
           // A node calling *up* to the hub. Symmetric with [request]: the node
           // sends NodeRequest, we answer NodeResponse.
-          unawaited(_serveRequest(decoded, connection, () => node));
+          unawaited(_serveRequest(decoded, connection, node));
         case NodeResponse(:final requestId):
           _pending.remove(requestId)?.completer.complete(decoded);
+        case NodeNotify(:final action, :final payload):
+          // One-way push. Like node→hub RPC, only registered nodes may send —
+          // but there is no reply, so an unregistered one is simply dropped.
+          final current = node;
+          if (current != null) onNotify?.call(action, payload, current);
         case NodeGoodbye():
           final current = node;
           if (current != null) {
             _failPendingFor(current.id, 'Node ${current.id} said goodbye');
-            registry.remove(current.id);
+            _dispose(current);
           }
           unawaited(connection.close());
         case NodeRegistered() ||
@@ -307,30 +413,73 @@ class NodeGateway extends ServiceBase {
           // Hub-directed message types the node should not send; ignore.
           break;
       }
+    }
+
+    onConnect?.call(connection, request);
+
+    connection.incoming.listen((message) {
+      NodeControlMessage decoded;
+      try {
+        decoded = codec.decode(message);
+      } on HubException catch (e) {
+        connection.send(codec.encode(NodeErrorMessage(e.code, e.message)));
+        return;
+      } on Object catch (e) {
+        // A codec that raises something other than a HubException must not
+        // escape this listener as an uncaught async error and tear down the
+        // isolate — answer the peer and keep serving.
+        logger.warn('Control message decode failed', context: {'error': '$e'});
+        connection.send(
+          codec.encode(
+            NodeErrorMessage(
+              ErrorCodes.protocolError,
+              'Malformed control message',
+            ),
+          ),
+        );
+        return;
+      }
+
+      if (registering && decoded is! NodeRegister) {
+        backlog.add(decoded);
+        return;
+      }
+      dispatch(decoded);
     });
 
     unawaited(
       connection.done.then((_) {
         final current = node;
+        onDisconnect?.call(current, connection);
         if (current != null) {
           _failPendingFor(current.id, 'Node ${current.id} disconnected');
-          registry.remove(current.id);
+          _dispose(current);
         }
       }),
     );
   }
 
+  /// Disposes of a registration whose connection is gone: removed outright, or
+  /// retained and marked offline when [retainNodes] is set.
+  void _dispose(RegisteredNode node) {
+    if (retainNodes) {
+      registry.markOffline(node.id);
+    } else {
+      registry.remove(node.id);
+    }
+  }
+
   /// Admits a node: runs [onRegister] (if any), then enters it into the
-  /// registry and acks with [NodeRegistered].
+  /// registry and acks with [NodeRegistered]. Returns the registration, or
+  /// `null` if it was rejected.
   ///
   /// A rejecting handler sends [NodeErrorMessage] and closes the connection —
   /// the node is never registered, so it is never discoverable and never
   /// heartbeats.
-  Future<void> _register(
+  Future<RegisteredNode?> _register(
     NodeRegister message,
     Connection connection,
     HubRequest request,
-    void Function(RegisteredNode) admit,
   ) async {
     final descriptor = message.descriptor;
     final handler = onRegister;
@@ -345,8 +494,8 @@ class NodeGateway extends ServiceBase {
           context: {'node': descriptor.id.value, 'code': e.code},
         );
         connection.send(codec.encode(NodeErrorMessage(e.code, e.message)));
-        await connection.close(_wsCodeFor(e), e.message);
-        return;
+        await connection.close(WsCloseCodes.forException(e), e.message);
+        return null;
       } on Object catch (e) {
         logger.error(
           'Node registration handler failed',
@@ -361,18 +510,16 @@ class NodeGateway extends ServiceBase {
           WsCloseCodes.unauthorized,
           'Registration failed',
         );
-        return;
+        return null;
       }
     }
 
-    admit(
-      registry.register(
-        descriptor: descriptor,
-        connection: connection,
-        now: clock.now(),
-        principal: request.principal,
-        connectionId: _ids.next('conn'),
-      ),
+    final node = registry.register(
+      descriptor: descriptor,
+      connection: connection,
+      now: clock.now(),
+      principal: request.principal,
+      connectionId: _ids.next('conn'),
     );
     connection.send(
       codec.encode(
@@ -380,14 +527,8 @@ class NodeGateway extends ServiceBase {
       ),
     );
     logger.info('Node registered', context: {'node': descriptor.id.value});
+    return node;
   }
-
-  static int _wsCodeFor(HubException e) => switch (e.statusCode) {
-    401 => WsCloseCodes.unauthorized,
-    403 => WsCloseCodes.forbidden,
-    404 => WsCloseCodes.notFound,
-    _ => WsCloseCodes.unauthorized,
-  };
 
   /// Answers an inbound [NodeRequest] with exactly one [NodeResponse] — a
   /// handler that throws yields a failed response rather than leaving the node
@@ -398,7 +539,7 @@ class NodeGateway extends ServiceBase {
   Future<void> _serveRequest(
     NodeRequest request,
     Connection connection,
-    RegisteredNode? Function() from,
+    RegisteredNode? from,
   ) async {
     void fail(String error) => connection.send(
       codec.encode(NodeResponse.failure(request.requestId, error)),
@@ -409,13 +550,12 @@ class NodeGateway extends ServiceBase {
       fail('No request handler');
       return;
     }
-    final node = from();
-    if (node == null) {
+    if (from == null) {
       fail('Not registered');
       return;
     }
     try {
-      final payload = await handler(request.action, request.payload, node);
+      final payload = await handler(request.action, request.payload, from);
       connection.send(
         codec.encode(NodeResponse(request.requestId, payload: payload)),
       );
@@ -426,9 +566,10 @@ class NodeGateway extends ServiceBase {
 
   void _onNodeTimeout(RegisteredNode node) {
     logger.warn('Node timed out', context: {'node': node.id.value});
+    onTimeout?.call(node);
     _failPendingFor(node.id, 'Node ${node.id} timed out');
     registry.markTimedOut(node.id);
     unawaited(node.connection.close());
-    registry.remove(node.id);
+    if (!retainNodes) registry.remove(node.id);
   }
 }

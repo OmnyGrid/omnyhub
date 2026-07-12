@@ -5,7 +5,8 @@ import 'error_codes.dart';
 /// The pipeline translates these into HTTP error responses via their
 /// [statusCode]/[code]/[message]; node peers translate them into protocol error
 /// messages. The hierarchy is `sealed` so callers can pattern-match
-/// exhaustively.
+/// exhaustively — applications that need their own failure types raise
+/// [AppException] rather than extending this directly.
 sealed class HubException implements Exception {
   /// Stable, machine-readable error code (see [ErrorCodes]).
   final String code;
@@ -140,4 +141,33 @@ class HubTimeoutException extends HubException {
   /// Creates a timeout failure with [message].
   const HubTimeoutException([String message = 'Operation timed out'])
     : super(code: ErrorCodes.timeout, message: message, statusCode: 504);
+}
+
+/// An application-defined failure, carrying its own [code] and [statusCode].
+///
+/// [HubException] is `sealed`, so an application cannot slot its own failure
+/// types into the hierarchy — but everything that maps errors to the wire (the
+/// pipeline's `errorMapper`, the hub's upgrade path, the node gateway's
+/// registration handler) keys off [HubException], and anything else becomes an
+/// opaque 500. This is the seam: translate the application's own exceptions into
+/// an [AppException] and they render with the intended status and code.
+///
+/// ```dart
+/// Middleware appErrors() => mapErrors((error, _) => switch (error) {
+///   MyDomainException e => HubResponse.error(
+///       AppException(code: e.code, message: e.message, statusCode: e.status)),
+///   _ => null, // rethrow; let the framework's errorMapper handle it
+/// });
+/// ```
+///
+/// Prefer a built-in ([NotFoundException], [UnauthorizedException], ...) when
+/// one fits — they carry the ecosystem's stable [ErrorCodes].
+class AppException extends HubException {
+  /// Creates an application failure with an explicit [code], [message] and
+  /// [statusCode].
+  const AppException({
+    required super.code,
+    required super.message,
+    required super.statusCode,
+  });
 }
