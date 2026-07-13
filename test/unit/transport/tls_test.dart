@@ -173,6 +173,36 @@ void main() {
         },
       );
 
+      test('renewBefore defaults to 5 days and reaches the ACME client', () {
+        expect(tls.renewBefore, const Duration(days: 5));
+        expect(tls.effectiveRenewBefore, const Duration(days: 5));
+      });
+
+      test('renewBefore widens the renewal margin', () {
+        final early = LetsEncryptTls.onDemand(
+          email: 'ops@example.com',
+          allowDomain: (_) => true,
+          cacheDir: cache.path,
+          renewBefore: const Duration(days: 15),
+        );
+
+        expect(early.renewBefore, const Duration(days: 15));
+        // The margin is worthless unless shelf_letsencrypt actually gets it.
+        expect(early.effectiveRenewBefore, const Duration(days: 15));
+      });
+
+      test('renewBefore must be positive', () {
+        expect(
+          () => LetsEncryptTls.onDemand(
+            email: 'ops@example.com',
+            allowDomain: (_) => true,
+            cacheDir: cache.path,
+            renewBefore: Duration.zero,
+          ),
+          throwsA(isA<ValidationException>()),
+        );
+      });
+
       test(
         'contextFor returns null for an uncached host and does not throw',
         () {

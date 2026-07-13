@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:meta/meta.dart';
 import 'package:shelf/shelf.dart' as shelf;
 import 'package:shelf_letsencrypt/shelf_letsencrypt.dart';
 
@@ -97,6 +98,21 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
   /// provisioned out-of-band.
   final bool autoIssue;
 
+  /// How much validity a certificate must have left to be kept; below this it
+  /// is renewed by [maybeRenew]. Defaults to 5 days.
+  ///
+  /// This is the safety margin, and it is only as good as the renewal cadence
+  /// that checks it: a certificate is renewed at most one
+  /// `OmnyHub.tlsRenewalInterval` (12h by default) after dropping below
+  /// [renewBefore], so keep it comfortably larger than that interval. Raise it
+  /// when a failed renewal needs room for several retries before the
+  /// certificate actually expires — Let's Encrypt's own advice is to renew with
+  /// about a third of the lifetime remaining (30 of 90 days).
+  ///
+  /// A certificate that is still valid keeps being served while it renews in
+  /// the background; only an *expired* one is withheld.
+  final Duration renewBefore;
+
   /// Hosts a previous [obtain] rejected, so a repeated TLS handshake does not
   /// re-invoke a (possibly expensive, possibly async) [allowDomain] policy.
   /// Bounded: an SNI flood of random hostnames must not grow it without limit.
@@ -118,6 +134,7 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
     this.onDemandEmail,
     this.onDemandEmailResolver,
     this.autoIssue,
+    this.renewBefore,
     this._certificates,
     this._letsEncrypt,
   );
@@ -130,7 +147,8 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
   /// host (e.g. a per-tenant lookup).
   ///
   /// Set [autoIssue] to `false` to serve only certificates already cached in
-  /// [cacheDir], never contacting the CA.
+  /// [cacheDir], never contacting the CA. Use [renewBefore] to widen the margin
+  /// in which a certificate is renewed.
   factory LetsEncryptTls({
     List<Domain> domains = const [],
     DomainPolicy? allowDomain,
@@ -139,6 +157,7 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
     required String cacheDir,
     bool production = false,
     bool autoIssue = true,
+    Duration renewBefore = const Duration(days: 5),
     int challengePort = 80,
     int securePort = 443,
   }) {
@@ -155,13 +174,16 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
         'allowDomain is set',
       );
     }
+    if (renewBefore <= Duration.zero) {
+      throw const ValidationException('renewBefore must be positive');
+    }
     final certificates = CertificatesHandlerIO(Directory(cacheDir));
     final letsEncrypt = LetsEncrypt(
       certificates,
       production: production,
       port: challengePort,
       securePort: securePort,
-    );
+    )..minCertificateValidityTime = renewBefore;
     return LetsEncryptTls._(
       domains,
       cacheDir,
@@ -171,6 +193,7 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
       onDemandEmail,
       onDemandEmailResolver,
       autoIssue,
+      renewBefore,
       certificates,
       letsEncrypt,
     );
@@ -183,6 +206,7 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
     required String cacheDir,
     bool production = false,
     bool autoIssue = true,
+    Duration renewBefore = const Duration(days: 5),
     int challengePort = 80,
     int securePort = 443,
   }) => LetsEncryptTls(
@@ -190,6 +214,7 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
     cacheDir: cacheDir,
     production: production,
     autoIssue: autoIssue,
+    renewBefore: renewBefore,
     challengePort: challengePort,
     securePort: securePort,
   );
@@ -208,6 +233,7 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
     List<Domain> domains = const [],
     bool production = false,
     bool autoIssue = true,
+    Duration renewBefore = const Duration(days: 5),
     int challengePort = 80,
     int securePort = 443,
   }) => LetsEncryptTls(
@@ -218,12 +244,18 @@ class LetsEncryptTls implements TlsProvider, SniTlsProvider {
     cacheDir: cacheDir,
     production: production,
     autoIssue: autoIssue,
+    renewBefore: renewBefore,
     challengePort: challengePort,
     securePort: securePort,
   );
 
   /// Whether on-demand issuance is enabled.
   bool get isOnDemand => allowDomain != null;
+
+  /// The renewal threshold as the underlying ACME client sees it — [renewBefore]
+  /// is only a safety margin if it actually reaches `shelf_letsencrypt`.
+  @visibleForTesting
+  Duration get effectiveRenewBefore => _letsEncrypt.minCertificateValidityTime;
 
   /// Whether [host] may be served (a seed domain or allowed by the policy).
   ///

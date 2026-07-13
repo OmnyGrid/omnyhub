@@ -1,3 +1,33 @@
+## 1.5.0
+
+### Added
+
+- **`LetsEncryptTls.renewBefore`.** How much validity a certificate must have
+  left to be kept; below it, `maybeRenew` renews. Defaults to 5 days — the
+  previous, hard-coded `shelf_letsencrypt` behaviour — so nothing changes unless
+  you set it.
+
+  5 days is a thin margin: a certificate is renewed at most one
+  `OmnyHub.tlsRenewalInterval` (12h by default) after dropping below the
+  threshold, and a failed renewal then has very little room to retry before the
+  certificate actually expires. Let's Encrypt's own advice is to renew with
+  roughly a third of the lifetime left (30 of 90 days). Applications that were
+  previously enforcing their own margin — refusing to serve a near-expiry
+  certificate, and reissuing — can now express it here instead:
+
+  ```dart
+  LetsEncryptTls.onDemand(
+    allowDomain: ...,
+    cacheDir: '/etc/letsencrypt/live',
+    renewBefore: const Duration(days: 15),
+  );
+  ```
+
+  A certificate that is still valid keeps being served while it renews in the
+  background; only an *expired* one is withheld (`isHandledDomainCertificate`
+  already rejects an expired, corrupt or unloadable certificate before any
+  `SecurityContext` is built, so an expired certificate is never served).
+
 ## 1.4.0
 
 On-demand TLS release — the seams an application needs to decide *its own way*
