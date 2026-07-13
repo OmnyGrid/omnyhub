@@ -1,3 +1,17 @@
+## 1.5.1
+
+### Changed
+
+- **Dependency bump.** `multi_domain_secure_server: ^1.0.17` (from `^1.0.16`) —
+  improves error handling and logging in `_accept` and `extractSNIHostname`, the
+  path every TLS handshake takes before a `SecurityContext` is chosen, so an SNI
+  read that fails now reports why instead of failing silently.
+  `meta: ^1.19.0` (from `^1.16.0`).
+
+No API changes; the suite passes unmodified against these versions.
+
+---
+
 ## 1.5.0
 
 ### Added
