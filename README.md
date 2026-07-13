@@ -19,12 +19,12 @@ port, route on host/path/header/protocol/auth, act as a reverse proxy or gateway
 nodes — with no assumptions specific to any one application.
 
 ```text
-                       ┌──────────────────────────── OmnyHub ───────────────────────────┐
-   HTTP / HTTPS        │  transports → auth → routing engine → service | proxy target    │
-   WS   / WSS   ─────► │   /api/*     ─► ApiService                                        │
-   clients            │   /drive/*   ─► ProxyService  ─────────────►  localhost:8081      │
-                       │   api.host   ─► ProxyService  ─────────────►  remote upstream     │
-                       │   /_node     ─► NodeGateway   ◄─ ws ─ Nodes (register/heartbeat)  │
+                       ┌──────────────────────────── OmnyHub ─────────────────────────────┐
+   HTTP / HTTPS        │  transports → auth → routing engine → service | proxy target     │
+   WS   / WSS   ─────► │   /api/*     ─► ApiService                                       │
+   clients             │   /drive/*   ─► ProxyService  ─────────────►  localhost:8081     │
+                       │   api.host   ─► ProxyService  ─────────────►  remote upstream    │
+                       │   /_node     ─► NodeGateway   ◄─ ws ─ Nodes (register/heartbeat) │
                        └──────────────────────────────────────────────────────────────────┘
 ```
 
