@@ -95,6 +95,57 @@ void main() {
       );
       expect(await streamed.readBytes(), [1, 2, 3]);
     });
+
+    test('responses are buffered by default, as dart:io buffers them', () {
+      expect(HubResponse.text('x').bufferOutput, isTrue);
+      expect(HubResponse.json({}).bufferOutput, isTrue);
+      expect(
+        HubResponse.stream(const Stream<List<int>>.empty()).bufferOutput,
+        isTrue,
+      );
+    });
+
+    test('eventStream opts out of buffering and sets the SSE headers', () {
+      final res = HubResponse.eventStream(const Stream<List<int>>.empty());
+      expect(res.bufferOutput, isFalse);
+      expect(res.headers['content-type'], 'text/event-stream; charset=utf-8');
+      expect(res.headers['cache-control'], 'no-cache, no-transform');
+    });
+
+    test('withHeaders merges over the originals, lower-casing new keys', () {
+      final res = HubResponse.text(
+        'body',
+        headers: {'x-keep': '1', 'x-override': 'old'},
+      ).withHeaders({'X-Override': 'new', 'X-Added': '2'});
+
+      expect(res.headers['x-keep'], '1');
+      expect(res.headers['x-override'], 'new');
+      expect(res.headers['x-added'], '2');
+      expect(res.headers['content-type'], 'text/plain; charset=utf-8');
+    });
+
+    test(
+      'withHeaders carries the status, body and bufferOutput across',
+      () async {
+        final res = HubResponse.eventStream(
+          Stream.value([1, 2, 3]),
+          statusCode: 201,
+        ).withHeaders({'x': '1'});
+
+        expect(res.statusCode, 201);
+        expect(res.bufferOutput, isFalse);
+        expect(await res.readBytes(), [1, 2, 3]);
+      },
+    );
+
+    test('withHeaders consumes the source: read-once still holds', () async {
+      final original = HubResponse.text('body');
+      final copy = original.withHeaders({'x': '1'});
+
+      expect(original.read, throwsStateError);
+      expect(await copy.readAsString(), 'body');
+      expect(copy.read, throwsStateError);
+    });
   });
 
   group('TransportProtocol', () {

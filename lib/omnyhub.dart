@@ -38,9 +38,11 @@ export 'src/core/transport_protocol.dart';
 export 'src/core/ws_close.dart';
 
 // HTTP model.
+export 'src/http/cors.dart';
 export 'src/http/handler.dart';
 export 'src/http/hub_request.dart';
 export 'src/http/hub_response.dart';
+export 'src/http/sse.dart';
 
 // Transport.
 export 'src/transport/http_transport.dart';

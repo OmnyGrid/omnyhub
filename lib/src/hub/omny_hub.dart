@@ -45,6 +45,7 @@ class OmnyHub {
   final ServiceRegistry _services = ServiceRegistry();
   final List<Route> _routes = [];
   final List<Middleware> _middleware;
+  final List<Middleware> _outerMiddleware;
 
   /// The routing strategy that selects a service for each request. Defaults to
   /// [RuleRouter]; inject a custom [Router] for bespoke strategies.
@@ -83,16 +84,25 @@ class OmnyHub {
 
   bool _running = false;
   Timer? _renewalTimer;
-  late HubRequestHandler _composed = errorMapper(logger: logger)(_dispatch);
+  late HubRequestHandler _composed = _buildPipeline();
 
   /// Creates a hub.
   ///
   /// [transports] are bound on [start]; more can be added with [addTransport].
   /// [middleware] runs on every request (outermost first), after the hub's own
   /// error-mapping wrapper. [logger] defaults to a no-op.
+  ///
+  /// [outerMiddleware] runs *outside* that wrapper and outside authentication —
+  /// the outermost layer of all. It is where a cross-cutting concern goes when
+  /// it must survive failure: it sees the responses `errorMapper` renders from a
+  /// thrown exception (a `401` from the authenticator, a `404` from routing, a
+  /// `500` from a bug), and it sees every request before the authenticator can
+  /// reject it. `cors()` belongs here — a browser must be able to read an error
+  /// response, and a CORS preflight carries no credentials.
   OmnyHub({
     List<Transport> transports = const [],
     List<Middleware> middleware = const [],
+    List<Middleware> outerMiddleware = const [],
     this.router = const RuleRouter(),
     this.authenticator = const AnonymousAuthenticator(),
     this.authorizer = const AllowAllAuthorizer(),
@@ -104,6 +114,7 @@ class OmnyHub {
     IdGenerator? idGenerator,
   }) : _transports = List.of(transports),
        _middleware = List.of(middleware),
+       _outerMiddleware = List.of(outerMiddleware),
        idGenerator = idGenerator ?? RandomIdGenerator();
 
   /// The transports bound (or to be bound) by this hub.
@@ -139,18 +150,42 @@ class OmnyHub {
     _middleware.add(middleware);
   }
 
-  void _rebuildPipeline() {
-    // ACME challenge middleware (if any TLS provider needs it) runs first, then
-    // authentication, then user middleware. Challenges must be answered
-    // unauthenticated on the plaintext transport.
-    _composed = errorMapper(logger: logger)(
+  /// Appends [middleware] to the *outermost* layer — outside error mapping and
+  /// authentication. Must be called before [start]. See the `outerMiddleware`
+  /// constructor parameter.
+  void useOuter(Middleware middleware) {
+    if (_running) {
+      throw StateError('Cannot add middleware while the hub is running');
+    }
+    _outerMiddleware.add(middleware);
+  }
+
+  void _rebuildPipeline() => _composed = _buildPipeline();
+
+  /// Composes the request pipeline, outermost first:
+  ///
+  /// outer middleware → error mapping → ACME challenges → authentication →
+  /// user middleware → routing and dispatch.
+  ///
+  /// The two middleware layers differ in what they can see. Ordinary middleware
+  /// runs *inside* error mapping and authentication, on an authenticated request
+  /// that will reach a service — but a failure never reaches it as a response,
+  /// because a thrown `UnauthorizedException`, `RoutingException` or bug becomes
+  /// a [HubResponse] only in `errorMapper`, above it. Outer middleware wraps
+  /// that too, so it sees every response the client will actually receive, and
+  /// every request before the authenticator can reject it. CORS needs both
+  /// properties: a browser must be able to *read* a 401 or a 500, and a
+  /// preflight carries no credentials by specification.
+  HubRequestHandler _buildPipeline() => composePipeline(
+    errorMapper(logger: logger)(
       composePipeline(_dispatch, [
         ..._challengeMiddlewares,
         _authMiddleware,
         ..._middleware,
       ]),
-    );
-  }
+    ),
+    _outerMiddleware,
+  );
 
   Iterable<Middleware> get _challengeMiddlewares => _transports
       .whereType<HttpTransport>()
