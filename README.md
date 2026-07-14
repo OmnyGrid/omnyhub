@@ -63,6 +63,10 @@ See the full API docs at [pub.dev/documentation/omnyhub][api_doc].
   `AuthCoordinator` that decides authenticate / bypass / delegate / block
   (pre-check), plus per-service `authenticator`/`authorizer` and an in-band
   `ConnectionAuthenticator` for WebSocket handshakes.
+- **Browser-ready.** `cors()` answers preflights and stamps the allow-origin
+  header — mounted in `outerMiddleware` so a browser can read an error response,
+  not just a success. `sseResponse()` pushes Server-Sent Events to a web app,
+  flushed as they are produced rather than stranded in the transport's buffer.
 - **Reverse proxy & gateway.** Full request/response streaming, `X-Forwarded-*`
   injection, hop-by-hop header stripping and **WebSocket upgrade forwarding**, to
   local or remote upstreams. Host- and path-based gateways and hybrid deployments
@@ -281,8 +285,12 @@ TLS listeners accept `"cert"`/`"key"` (static) or a `"letsencrypt"` block.
 
 1. Each **transport** binds one address/port and normalises inbound traffic into
    a `HubRequest` (or, on upgrade, a `Connection`).
-2. The request runs through the **pipeline**: error mapping, ACME challenge
-   (if any), authentication (attaching a `Principal`), then user middleware.
+2. The request runs through the **pipeline**: outer middleware, error mapping,
+   ACME challenge (if any), authentication (attaching a `Principal`), then user
+   middleware. Outer middleware wraps the error mapper, so it alone sees the
+   responses rendered from a thrown exception (a `401`, `404` or `500`) and every
+   request before the authenticator can reject one — which is where `cors()`
+   belongs.
 3. The **router** builds a `RouteContext` (host split into domain/subdomain,
    path, protocol, headers, principal) and selects the best matching route.
 4. The **authorizer** gates the request, then the matched **service** handles it

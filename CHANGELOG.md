@@ -1,3 +1,74 @@
+## 1.6.0
+
+The browser release: a hub can now be called from a web app on another origin,
+and push a live event stream to it.
+
+Additive and backward-compatible. Every new parameter defaults to today's
+behaviour, and a hub that configures neither feature emits byte-identical
+responses — verified by running the full suite unmodified against this release.
+
+### Added
+
+- **CORS.** `cors()` — a `Middleware` that answers a preflight `OPTIONS` itself
+  with a `204`, short-circuiting the pipeline so it never reaches routing (where
+  it would come back as the router's `405` or the hub's `404`, neither carrying
+  CORS headers), and stamps `Access-Control-Allow-Origin` onto every other
+  response. Origins come from an exact allow-list, a predicate, or
+  `allowAnyOrigin`. `authorization` and `x-omny-principal` are allowed by
+  default, because that is what the omny APIs send. `Vary: Origin` is merged into
+  any `vary` the handler already set, and a request with no `Origin` header — any
+  non-browser client — passes through untouched.
+
+  ```dart
+  final hub = OmnyHub(
+    transports: [HttpTransport.http(port: 8080)],
+    outerMiddleware: [cors(allowedOrigins: ['https://app.example.com'])],
+  );
+  ```
+
+- **`OmnyHub.outerMiddleware` and `useOuter`.** Middleware composed *outside* the
+  hub's error mapping and global authentication, so it sees every response the
+  client will actually receive — including the ones `errorMapper` renders from a
+  thrown exception — and every request before the authenticator can reject it.
+
+  CORS needs both. Mounted in the ordinary `middleware` layer it can never stamp
+  the `401` the authenticator throws, the `404` routing throws, or a `500`, since
+  those become responses only *above* it; the browser would then get an opaque
+  network error instead of the real status. And a preflight, which by
+  specification carries no credentials, would be rejected by a strict
+  authenticator before CORS ever saw it. Defaults to empty, in which case the
+  pipeline is exactly what it was.
+
+- **Server-Sent Events.** `sseResponse(Stream<SseEvent>)`, `SseEvent`
+  (`data`/`event`/`id`/`retry`, plus `SseEvent.json`), `encodeSseEvents`, and the
+  lower-level `HubResponse.eventStream`. Events are flushed as they are produced;
+  a `: ping` comment every 15s (configurable) keeps the connection alive and is
+  what eventually surfaces a client that vanished; `onCancel` then fires so
+  per-client resources are released.
+
+  ```dart
+  hub.registerService(HandlerService(
+    name: 'events', mount: '/events',
+    handler: (request) async => sseResponse(bus.stream.map(SseEvent.json)),
+  ));
+  ```
+
+- **`HubResponse.bufferOutput`.** Whether the transport may buffer the body —
+  `true` by default, unchanged. It exists because `dart:io` holds written bytes
+  until an 8 KiB buffer fills or the response closes: a live stream closes never
+  and its events are tiny, so without this flag a Server-Sent Event would sit in
+  the buffer and never reach the browser. `HubResponse.eventStream` sets it
+  `false`, and `HttpTransport` translates it into shelf's `shelf.io.buffer_output`
+  context key. `HubResponse.stream` accepts it too, for any long-lived push
+  stream.
+
+- **`HubResponse.withHeaders`.** A copy with headers merged over the originals,
+  carrying the status code, the unread body and `bufferOutput` across — the seam
+  middleware needs, `headers` being unmodifiable and `read()` once-only. Reading
+  the original afterwards throws, exactly as a second `read()` would.
+
+---
+
 ## 1.5.1
 
 ### Changed

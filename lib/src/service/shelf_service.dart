@@ -57,6 +57,11 @@ class ShelfService extends ServiceBase {
       statusCode: shelfResponse.statusCode,
       headers: shelfResponse.headers,
       body: shelfResponse.read(),
+      // A hosted shelf handler streaming SSE sets shelf's own context key to
+      // defeat output buffering; carry that intent across rather than dropping
+      // it, or its events would strand in the transport. Absent (the usual
+      // case) means buffered, as before.
+      bufferOutput: shelfResponse.context['shelf.io.buffer_output'] != false,
     );
   }
 

@@ -203,10 +203,21 @@ class HttpTransport implements Transport {
     );
   }
 
+  /// Renders a [HubResponse] onto shelf.
+  ///
+  /// The body is handed over as a stream, never buffered here. But `dart:io`
+  /// buffers *output*: it holds written bytes until an 8 KiB buffer fills or the
+  /// response closes, which would strand the small events of a live stream.
+  /// `shelf.io.buffer_output` is the only lever that disables it, so a response
+  /// asking not to be buffered is translated into that context key. Buffered
+  /// responses pass `null` — shelf's own default — and so are unchanged.
   shelf.Response _toShelfResponse(HubResponse response) => shelf.Response(
     response.statusCode,
     body: response.read(),
     headers: response.headers,
+    context: response.bufferOutput
+        ? null
+        : const {'shelf.io.buffer_output': false},
   );
 
   static bool _isWebSocketUpgrade(shelf.Request request) {
