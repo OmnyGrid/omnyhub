@@ -1,3 +1,35 @@
+## 1.7.0
+
+A node now learns *why* the hub refused its registration, instead of waiting out
+the clock.
+
+Additive and backward-compatible.
+
+### Fixed
+
+- **A rejected registration is delivered to the node at once, as a typed
+  exception.** When the hub's `onRegister` handler threw, the gateway sent the
+  node a `NodeErrorMessage` and closed the connection — but the runtime only
+  *logged* that frame and left the registration future pending, so the node
+  waited out `registerTimeout` (10s by default) on every attempt before it even
+  backed off. The runtime now completes the pending registration with the error
+  the frame carries, reconstructed into its `HubException` type by the new
+  `hubExceptionForCode`. The connect loop then classifies it through
+  `NodeConfig.isTerminal` — a rejection the node cannot fix (a
+  `ForbiddenException` for the wrong role, a `ValidationException` for a bad
+  descriptor) can end the runtime instead of retrying forever, and either way the
+  failure and its reason reach the logger immediately rather than 10 seconds
+  later.
+
+### Added
+
+- **`hubExceptionForCode(code, message)`** — reconstructs a `HubException` from
+  the `code`/`message` on a wire error frame, the inverse of the gateway's error
+  serialization. An unknown code round-trips as an `AppException`, so a newer
+  hub's code never degrades to something meaningless on an older node.
+
+---
+
 ## 1.6.0
 
 The browser release: a hub can now be called from a web app on another origin,

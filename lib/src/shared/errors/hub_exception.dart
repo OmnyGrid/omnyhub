@@ -171,3 +171,41 @@ class AppException extends HubException {
     required super.statusCode,
   });
 }
+
+/// Reconstructs a [HubException] from the [code]/[message] carried on a wire
+/// error frame — the inverse of the mapping the hub uses to serialize a thrown
+/// exception (see the node gateway's registration handler).
+///
+/// Used by a node peer to turn a `NodeErrorMessage` back into a typed exception,
+/// so the receiver can classify it (retry vs. give up) instead of guessing from
+/// a string. An unrecognised [code] round-trips as an [AppException] carrying it
+/// verbatim, so a newer hub code never degrades to something meaningless.
+HubException hubExceptionForCode(String code, String message) {
+  switch (code) {
+    case ErrorCodes.validationError:
+      return ValidationException(message);
+    case ErrorCodes.invalidJson:
+      return InvalidJsonException(message);
+    case ErrorCodes.notFound:
+    case ErrorCodes.nodeNotFound:
+      return NotFoundException(code: code, message: message);
+    case ErrorCodes.unauthorized:
+      return UnauthorizedException(message);
+    case ErrorCodes.forbidden:
+      return ForbiddenException(message);
+    case ErrorCodes.tooManyRequests:
+      return TooManyRequestsException(message);
+    case ErrorCodes.nodeUnavailable:
+      return NodeUnavailableException(message);
+    case ErrorCodes.protocolError:
+      return ProtocolException(message);
+    case ErrorCodes.transportError:
+      return TransportException(message);
+    case ErrorCodes.tlsError:
+      return TlsException(message);
+    case ErrorCodes.timeout:
+      return HubTimeoutException(message);
+    default:
+      return AppException(code: code, message: message, statusCode: 500);
+  }
+}

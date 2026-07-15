@@ -524,7 +524,19 @@ class NodeRuntime {
         // The hub answering a [request] we sent up to it.
         _pendingRequests.remove(requestId)?.complete(decoded);
       case NodeErrorMessage(:final code, :final message):
-        logger.warn('Hub error', context: {'code': code, 'message': message});
+        final pendingRegister = _registered;
+        if (pendingRegister != null && !pendingRegister.isCompleted) {
+          // The hub rejected *this registration* (and is about to close the
+          // connection). Fail the attempt with the typed error rather than let
+          // it wait out the register timeout: the connect loop then classifies
+          // it — a rejection the node cannot fix (forbidden, invalid) is
+          // terminal if [NodeConfig.isTerminal] says so, otherwise it retries
+          // immediately — and logs the cause. The registration is the only thing
+          // that can be pending on this channel before the node is ready.
+          pendingRegister.completeError(hubExceptionForCode(code, message));
+        } else {
+          logger.warn('Hub error', context: {'code': code, 'message': message});
+        }
       case NodeNotify(:final action, :final payload):
         // Hub → node one-way push. Reuses the RPC handler with no reply sent, so
         // an application registers a single action table for both directions.
