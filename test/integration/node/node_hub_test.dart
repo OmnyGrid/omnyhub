@@ -157,4 +157,92 @@ void main() {
       expect(gateway.discover(capability: 'x').single.id.value, 'resilient');
     },
   );
+
+  group('a rejected registration', () {
+    late OmnyHub rejectingHub;
+    late Uri rejectingUri;
+
+    setUp(() async {
+      rejectingHub = OmnyHub(
+        transports: [HttpTransport.http(address: '127.0.0.1', port: 0)],
+      );
+      await rejectingHub.registerService(
+        NodeGateway(
+          onRegister: (descriptor, payload, principal) async =>
+              throw ForbiddenException(
+                'principal may not register node ${descriptor.id.value}',
+              ),
+        ),
+      );
+      await rejectingHub.start();
+      rejectingUri = Uri.parse('ws://127.0.0.1:${rejectingHub.port}/_node');
+    });
+
+    tearDown(() => rejectingHub.stop());
+
+    // The register future used to be left pending on a rejection, so the node
+    // waited out registerTimeout (10s) before even backing off. The long timeout
+    // here proves it no longer does: a rejection arrives as a typed error at once.
+    test(
+      'fails with the typed error, without waiting out the timeout',
+      () async {
+        final node = NodeRuntime(
+          NodeConfig(
+            hubUri: rejectingUri,
+            nodeId: NodeId('rejected'),
+            registerTimeout: const Duration(seconds: 30),
+            reconnect: ReconnectPolicy(
+              initial: const Duration(milliseconds: 50),
+            ),
+            isTerminal: (e) => e is ForbiddenException,
+          ),
+        );
+        nodes.add(node);
+
+        final stopwatch = Stopwatch()..start();
+        await node.start();
+        await waitFor(
+          () => node.state == NodeState.stopped,
+          timeout: const Duration(seconds: 5),
+        );
+        stopwatch.stop();
+
+        expect(
+          stopwatch.elapsed,
+          lessThan(const Duration(seconds: 5)),
+          reason:
+              'the rejection is delivered at once, not after registerTimeout',
+        );
+        expect(node.terminalError, isA<ForbiddenException>());
+        expect(
+          (node.terminalError! as ForbiddenException).message,
+          allOf(contains('may not register'), contains('rejected')),
+        );
+      },
+    );
+
+    // When the node does not treat the rejection as terminal, it keeps trying —
+    // and, crucially, tries *again quickly* rather than once every timeout.
+    test('retries promptly when not classified terminal', () async {
+      var attempts = 0;
+      final node = NodeRuntime(
+        NodeConfig(
+          hubUri: rejectingUri,
+          nodeId: NodeId('persistent'),
+          registerTimeout: const Duration(seconds: 30),
+          reconnect: ReconnectPolicy(initial: const Duration(milliseconds: 50)),
+        ),
+      );
+      nodes.add(node);
+      node.states.listen((s) {
+        if (s == NodeState.backoff) attempts++;
+      });
+
+      await node.start();
+      // Several attempts inside a window far shorter than one registerTimeout
+      // proves the register no longer blocks for 30s per try.
+      await waitFor(() => attempts >= 3, timeout: const Duration(seconds: 5));
+      expect(node.state, isNot(NodeState.stopped));
+    });
+  });
 }
