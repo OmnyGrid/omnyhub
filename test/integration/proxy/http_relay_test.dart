@@ -36,6 +36,18 @@ void main() {
             ..set('cache-control', 'public, max-age=60')
             ..set('etag', '"v1"');
           res.write('body { color: red }');
+        case '/page':
+          // Revalidated on every use; Dart's HttpServer answers the 304 with
+          // its default Content-Type (text/plain).
+          if (req.headers.value('if-none-match') == '"p1"') {
+            res.statusCode = HttpStatus.notModified;
+          } else {
+            res.headers
+              ..contentType = ContentType.html
+              ..set('cache-control', 'max-age=0')
+              ..set('etag', '"p1"');
+            res.write('<h1>page</h1>');
+          }
         case '/private':
           res.headers.set('cache-control', 'private, max-age=60');
           res.write('mine');
@@ -142,6 +154,20 @@ void main() {
     await get(c, '/private');
     await get(c, '/private');
     expect(hits['/private'], 2);
+  });
+
+  test('a revalidated page keeps its Content-Type', () async {
+    await start();
+    final c = http();
+    final first = await get(c, '/page');
+    expect(first.$3.contentType?.mimeType, 'text/html');
+    for (var i = 0; i < 3; i++) {
+      final r = await get(c, '/page');
+      expect(r.$3.value('x-cache'), 'REVALIDATED');
+      expect(r.$3.contentType?.mimeType, 'text/html');
+      expect(r.$2, '<h1>page</h1>');
+    }
+    expect(hits['/page'], 4, reason: 'one fetch + three revalidations');
   });
 
   test('Vary keeps a copy per request header value', () async {

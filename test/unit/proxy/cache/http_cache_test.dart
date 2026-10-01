@@ -534,6 +534,62 @@ void main() {
       expect(e.head.status, 200);
     });
 
+    test("a 304 never changes the stored body's description", () {
+      final e = put(
+        cache,
+        get('/page'),
+        ok(
+          headers: const [
+            (name: 'Cache-Control', value: 'max-age=0'),
+            (name: 'ETag', value: '"1"'),
+            (name: 'Content-Type', value: 'text/html'),
+            (name: 'Content-Language', value: 'en'),
+            (name: 'Content-Location', value: '/old'),
+          ],
+        ),
+      )!;
+      // What Dart's HttpServer sends for a bare 304.
+      cache.refresh(
+        e,
+        (
+          version: '1.1',
+          status: 304,
+          reason: 'Not Modified',
+          headers: const [
+            (name: 'content-type', value: 'text/plain; charset=utf-8'),
+            (name: 'content-language', value: 'pt'),
+            (name: 'content-length', value: '0'),
+            (name: 'Content-Location', value: '/new'),
+            (name: 'Cache-Control', value: 'max-age=30'),
+          ],
+        ),
+        requestTime: now,
+        responseTime: now,
+      );
+      expect(headerValue(e.head.headers, 'content-type'), 'text/html');
+      expect(headerValue(e.head.headers, 'content-language'), 'en');
+      expect(headerValue(e.head.headers, 'content-length'), '5');
+      expect(headerValue(e.head.headers, 'content-location'), '/new');
+      expect(headerValue(e.head.headers, 'cache-control'), 'max-age=30');
+    });
+
+    test('isRepresentationField', () {
+      for (final n in [
+        'Content-Type',
+        'content-encoding',
+        'Content-Length',
+        'Content-Range',
+        'Content-Disposition',
+        'Transfer-Encoding',
+        'Trailer',
+      ]) {
+        expect(HttpCache.isRepresentationField(n), isTrue, reason: n);
+      }
+      for (final n in ['Content-Location', 'ETag', 'Cache-Control', 'Date']) {
+        expect(HttpCache.isRepresentationField(n), isFalse, reason: n);
+      }
+    });
+
     test('a 304 turning no-store drops the entry', () {
       final e = put(cache, get('/r'), ok())!;
       cache.refresh(

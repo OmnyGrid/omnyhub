@@ -1,3 +1,29 @@
+## 1.9.1
+
+### Fixed
+
+- **A revalidated cache entry no longer loses its `Content-Type`.** When a
+  stale entry was confirmed by a `304 Not Modified`, `HttpCache.refresh`
+  copied every field of the `304` onto the stored response. Dart's
+  `HttpServer`, for one, sends its default `Content-Type: text/plain;
+  charset=utf-8` on every `304`. So after the first revalidation, a cached
+  `text/html` page was served as plain text (browsers then showed its source).
+  A `304` confirms the stored body, so the fields that describe that body are
+  now never taken from it: every `Content-*` field except `Content-Location`,
+  plus `Transfer-Encoding` and `Trailer` (`HttpCache.isRepresentationField`).
+  Validators, `Cache-Control`, `Expires`, `Date` and other fields still update
+  as before.
+
+### Tests
+
+- A unit test that a `304` carrying `Content-Type`, `Content-Language` and
+  `Content-Length` leaves the stored ones intact while `Content-Location` and
+  `Cache-Control` update. An integration test revalidates a `text/html` page
+  against a real Dart `HttpServer` (whose `304`s carry `text/plain`) and checks
+  it stays `text/html`; it fails without the fix.
+
+---
+
 ## 1.9.0
 
 A byte-level relay carrying HTTP can now cache responses and enforce timeouts,
