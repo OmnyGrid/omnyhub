@@ -573,6 +573,26 @@ void main() {
       expect(headerValue(e.head.headers, 'cache-control'), 'max-age=30');
     });
 
+    test("a 304's Set-Cookie is never stored", () {
+      final e = put(cache, get('/sc'), ok())!;
+      cache.refresh(
+        e,
+        (
+          version: '1.1',
+          status: 304,
+          reason: '',
+          headers: const [
+            (name: 'Set-Cookie', value: 'sid=secret'),
+            (name: 'X-New', value: '1'),
+          ],
+        ),
+        requestTime: now,
+        responseTime: now,
+      );
+      expect(headerValue(e.head.headers, 'set-cookie'), isNull);
+      expect(headerValue(e.head.headers, 'x-new'), '1');
+    });
+
     test('isRepresentationField', () {
       for (final n in [
         'Content-Type',

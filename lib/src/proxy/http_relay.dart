@@ -376,7 +376,18 @@ class HttpRelay {
           responseTime: ex.responseTime!,
         )
         ..recordRevalidated();
-      ex.out.add(_serve(entry, ex.request, 'REVALIDATED'));
+      // A cookie on the 304 is for this client alone: pass it on, unstored.
+      ex.out.add(
+        _serve(
+          entry,
+          ex.request,
+          'REVALIDATED',
+          extra: [
+            for (final h in head.headers)
+              if (h.name.toLowerCase() == 'set-cookie') h,
+          ],
+        ),
+      );
     } else if (c != null) {
       final capture = ex.capture;
       if (capture != null) {
@@ -603,11 +614,13 @@ class HttpRelay {
     HttpRequestHead request,
     String status, {
     bool close = false,
+    List<HeaderField> extra = const [],
   }) {
     final age = entry.age(_now()).inSeconds;
     final headers = [
       for (final h in entry.head.headers)
         if (h.name.toLowerCase() != 'age') h,
+      ...extra,
       (name: 'Age', value: '$age'),
       if (close) (name: 'Connection', value: 'close'),
     ];

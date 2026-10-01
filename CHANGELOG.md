@@ -13,6 +13,11 @@
   plus `Transfer-Encoding` and `Trailer` (`HttpCache.isRepresentationField`).
   Validators, `Cache-Control`, `Expires`, `Date` and other fields still update
   as before.
+- **A `Set-Cookie` on a `304` is no longer shared with other clients.** The
+  same merge stored a `304`'s `Set-Cookie` in the entry, so one client's
+  cookie (a session id, for example) was then replayed to every client the
+  entry was served to. The cookie now goes only to the client whose request
+  triggered the revalidation, and is never stored.
 
 ### Tests
 
@@ -21,6 +26,26 @@
   `Cache-Control` update. An integration test revalidates a `text/html` page
   against a real Dart `HttpServer` (whose `304`s carry `text/plain`) and checks
   it stays `text/html`; it fails without the fix.
+- A new integration suite, `http_cache_headers_test.dart`, runs 23 cases
+  through `HttpRelay` against a real Dart origin:
+  - **Header fidelity on hits:** `Content-Type`, `-Language`,
+    `-Disposition`, `-Length`, `ETag`, `Last-Modified`, `Expires`, custom
+    headers and `Date` are kept; hop-by-hop fields are dropped. Chunked and
+    binary bodies replay byte for byte.
+  - `HEAD` served from a cached `GET`, and gzip variants kept apart by `Vary`.
+  - **Revalidation:** with `ETag` or `Last-Modified` only; a `304` that
+    renews the lifetime; a `304`'s `Set-Cookie` reaching only its own client;
+    `must-revalidate` versus `max-stale`.
+  - **Freshness:** `s-maxage`, `Expires` in the future or past, and the
+    default TTL.
+  - **Statuses:** a `404` and a `301` cached, a `500` not.
+  - **Never shared:** `Set-Cookie`, `private`, `Authorization` and `Range`.
+  - **The client's own directives:** hard refresh, `Pragma`, `no-store`,
+    `only-if-cached` and conditional requests.
+  - **Invalidation and limits:** a `POST` drops its path, and an oversized
+    entry isn't stored.
+  
+  The `Set-Cookie` case fails without the fix.
 
 ---
 

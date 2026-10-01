@@ -498,7 +498,10 @@ class HttpCache {
   /// never taken from it ([isRepresentationField]): some servers send
   /// defaults there — Dart's `HttpServer`, for one, puts
   /// `Content-Type: text/plain; charset=utf-8` on every `304` — which would
-  /// otherwise relabel a cached `text/html` page.
+  /// otherwise relabel a cached `text/html` page. `Set-Cookie` is never
+  /// stored either: it belongs to the one client whose request triggered the
+  /// revalidation (the relay passes it to that client only), not to everyone
+  /// the entry is later served to.
   void refresh(
     HttpCacheEntry entry,
     HttpResponseHead notModified, {
@@ -508,7 +511,9 @@ class HttpCache {
     if (!_lru.contains(entry)) return;
     final updates = {
       for (final h in _storedHead(notModified).headers)
-        if (!isRepresentationField(h.name)) h.name.toLowerCase(),
+        if (!isRepresentationField(h.name) &&
+            h.name.toLowerCase() != 'set-cookie')
+          h.name.toLowerCase(),
     };
     final merged = <HeaderField>[
       for (final h in entry.head.headers)
