@@ -82,8 +82,12 @@ export 'src/service/service_registry.dart';
 export 'src/service/shelf_service.dart';
 
 // Reverse proxy.
+export 'src/proxy/cache/cache_control.dart';
+export 'src/proxy/cache/http_cache.dart';
 export 'src/proxy/forwarded_headers.dart';
+export 'src/proxy/http_relay.dart';
 export 'src/proxy/http_request_rewriter.dart';
+export 'src/proxy/http_stream_parser.dart';
 export 'src/proxy/proxy_service.dart';
 export 'src/proxy/upstream.dart';
 
