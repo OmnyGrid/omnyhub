@@ -3,6 +3,7 @@
 [![pub package](https://img.shields.io/pub/v/omnyhub.svg?logo=dart&logoColor=00b9fc)](https://pub.dev/packages/omnyhub)
 [![Null Safety](https://img.shields.io/badge/null-safety-brightgreen)](https://dart.dev/null-safety)
 [![Dart CI](https://github.com/OmnyGrid/omnyhub/actions/workflows/dart.yml/badge.svg?branch=master)](https://github.com/OmnyGrid/omnyhub/actions/workflows/dart.yml)
+[![codecov](https://codecov.io/gh/OmnyGrid/omnyhub/branch/master/graph/badge.svg)](https://codecov.io/gh/OmnyGrid/omnyhub)
 [![GitHub Tag](https://img.shields.io/github/v/tag/OmnyGrid/omnyhub?logo=git&logoColor=white)](https://github.com/OmnyGrid/omnyhub/releases)
 [![New Commits](https://img.shields.io/github/commits-since/OmnyGrid/omnyhub/latest?logo=git&logoColor=white)](https://github.com/OmnyGrid/omnyhub/network)
 [![Last Commits](https://img.shields.io/github/last-commit/OmnyGrid/omnyhub?logo=git&logoColor=white)](https://github.com/OmnyGrid/omnyhub/commits/master)
