@@ -478,12 +478,30 @@ class HttpCache {
     return _lru.contains(entry) ? entry : null;
   }
 
+  /// Whether [name] describes (or frames) the stored body rather than the
+  /// response as a whole: every `Content-*` field except `Content-Location`,
+  /// plus `Transfer-Encoding` and `Trailer`. A `304` never updates these.
+  static bool isRepresentationField(String name) {
+    final n = name.toLowerCase();
+    if (n == 'transfer-encoding' || n == 'trailer') return true;
+    return n.startsWith('content-') && n != 'content-location';
+  }
+
   static bool _sameVary(Map<String, String> a, Map<String, String> b) =>
       a.length == b.length && a.entries.every((e) => b[e.key] == e.value);
 
   /// Refreshes [entry] from a `304 Not Modified` [notModified] (RFC 9111
-  /// §4.3.4): its fields replace the stored ones (framing fields excepted) and
-  /// freshness restarts. An update that makes the entry `no-store` drops it.
+  /// §4.3.4): its fields replace the stored ones and freshness restarts. An
+  /// update that makes the entry `no-store` drops it.
+  ///
+  /// A `304` confirms the stored body, so fields that describe that body are
+  /// never taken from it ([isRepresentationField]): some servers send
+  /// defaults there — Dart's `HttpServer`, for one, puts
+  /// `Content-Type: text/plain; charset=utf-8` on every `304` — which would
+  /// otherwise relabel a cached `text/html` page. `Set-Cookie` is never
+  /// stored either: it belongs to the one client whose request triggered the
+  /// revalidation (the relay passes it to that client only), not to everyone
+  /// the entry is later served to.
   void refresh(
     HttpCacheEntry entry,
     HttpResponseHead notModified, {
@@ -491,10 +509,11 @@ class HttpCache {
     required DateTime responseTime,
   }) {
     if (!_lru.contains(entry)) return;
-    const keep = {'content-length', 'transfer-encoding', 'content-encoding'};
     final updates = {
       for (final h in _storedHead(notModified).headers)
-        if (!keep.contains(h.name.toLowerCase())) h.name.toLowerCase(),
+        if (!isRepresentationField(h.name) &&
+            h.name.toLowerCase() != 'set-cookie')
+          h.name.toLowerCase(),
     };
     final merged = <HeaderField>[
       for (final h in entry.head.headers)
