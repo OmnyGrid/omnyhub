@@ -1,3 +1,42 @@
+## 1.8.0
+
+Forwarding headers for relays that never parse a request: a byte-level TCP
+tunnel carrying HTTP can now tell its upstream who the real client is.
+
+Additive and backward-compatible. `ProxyService` is unchanged.
+
+### Added
+
+- **`ForwardedHeaders`** — the facts one proxy hop knows (client address, TLS
+  or not, host, port, a `Via` pseudonym, extra context headers, an optional
+  request-id minter) and `apply`, which adds them to a plain list of header
+  fields. It sets `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`,
+  `X-Forwarded-Port`, `X-Forwarded-Ssl`, `X-Real-IP`, RFC 7239 `Forwarded`,
+  `Via` and (when asked) `X-Request-Id`. The policy is **append**: values a
+  client or earlier proxy sent are kept and this hop's is appended, so an
+  upstream trusts only the right-most entry; the single-valued `X-Real-IP`,
+  `X-Forwarded-Ssl` and `X-Request-Id` are set only when absent. Values are
+  stripped of control characters so none can inject a header line.
+- **`HttpRequestHeaderRewriter`** — rewrites the head of *every* request on a
+  raw HTTP/1.x client→server byte stream, not just the first: it frames bodies
+  by `Content-Length` or chunked encoding (extensions and trailers included)
+  and forwards them byte for byte. It switches to pass-through after a protocol
+  upgrade (WebSocket) or `CONNECT`, on a close-delimited or ambiguous body, on
+  anything that is not HTTP/1.x (including HTTP/2 prior knowledge), and on a
+  head over `maxHeadBytes` (64 KiB), so it never buffers more than one head.
+- **`HeaderField`** and **`HttpRequestHead`** record typedefs used by both.
+
+### Tests
+
+- Unit tests for both classes (100% line coverage), including every framing
+  path fed whole and in 1/3/7-byte pieces; an integration test relaying a real
+  `HttpClient` through a raw socket to a real `HttpServer` over one keep-alive
+  connection (chunked 70 KB upload, a body that looks like a request, a
+  WebSocket); and `ProxyService` coverage for a WebSocket to an unreachable
+  upstream and for `forwardWebSocket: false`.
+
+---
+
 ## 1.7.0
 
 A node now learns *why* the hub refused its registration, instead of waiting out

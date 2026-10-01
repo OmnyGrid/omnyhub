@@ -82,6 +82,15 @@ void main() {
         mount: '/dead',
       ),
     );
+    await gateway.route(
+      PathRule('/nows'),
+      ProxyService(
+        Upstream.uri(backendBase),
+        name: 'nows',
+        mount: '/nows',
+        forwardWebSocket: false,
+      ),
+    );
     await gateway.registerService(
       HandlerService(
         name: 'local',
@@ -167,5 +176,19 @@ void main() {
     conn.send(const TextMessage('ping'));
     expect(await first, const TextMessage('backend:ping'));
     await conn.close();
+  });
+
+  test('a WebSocket to an unreachable upstream is closed', () async {
+    final conn = await WebSocketConnection.connect(
+      Uri.parse('ws://127.0.0.1:${gateway.port}/dead'),
+    );
+    await conn.done.timeout(const Duration(seconds: 5));
+  });
+
+  test('forwardWebSocket: false refuses the upgrade', () async {
+    final conn = await WebSocketConnection.connect(
+      Uri.parse('ws://127.0.0.1:${gateway.port}/nows'),
+    );
+    await conn.done.timeout(const Duration(seconds: 5));
   });
 }

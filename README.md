@@ -70,7 +70,9 @@ See the full API docs at [pub.dev/documentation/omnyhub][api_doc].
 - **Reverse proxy & gateway.** Full request/response streaming, `X-Forwarded-*`
   injection, hop-by-hop header stripping and **WebSocket upgrade forwarding**, to
   local or remote upstreams. Host- and path-based gateways and hybrid deployments
-  are the same mechanism.
+  are the same mechanism. For byte-level relays (TCP tunnels) that never parse
+  a request, `HttpRequestHeaderRewriter` + `ForwardedHeaders` add the
+  forwarding headers to every request on a raw HTTP/1.x stream.
 - **Automatic TLS.** Static certificates or automatic Let's Encrypt (ACME
   HTTP-01) provisioning and renewal with hot-reload, behind a single
   `TlsProvider` port — including **dynamic, on-demand multi-domain** issuance via
@@ -129,7 +131,7 @@ lib/
     ├── routing/    # RouteContext, RouteRule (+ built-ins), Route, Router, RuleRouter
     ├── auth/       # Authenticator, Authorizer + built-ins
     ├── service/    # Service port, HandlerService, ServiceRegistry
-    ├── proxy/      # Upstream, ProxyService (HTTP + WS forwarding)
+    ├── proxy/      # Upstream, ProxyService (HTTP + WS forwarding), ForwardedHeaders, HttpRequestHeaderRewriter
     ├── node/       # control protocol + codec, registry, discovery, heartbeat, gateway, runtime
     ├── hub/        # OmnyHub facade, pipeline, middleware
     ├── cli/        # gateway config builder
@@ -201,6 +203,27 @@ hub.route(PathRule('/drive'), ProxyService(Upstream.uri('http://localhost:8081')
 hub.route(HostRule('files.example.com'), ProxyService(Upstream.uri('http://10.0.0.5:9000'),
     name: 'files'));
 ```
+
+**Forwarding headers on a raw byte stream** (e.g. a TCP tunnel carrying HTTP):
+
+```dart
+final rewriter = HttpRequestHeaderRewriter(
+  (head) => ForwardedHeaders(
+    clientAddress: client.remoteAddress.address,
+    secure: true,
+    port: publicPort,
+    via: 'my-hub',
+    extra: {'X-Tunnel-Id': tunnelId},
+  ).apply(head.headers, httpVersion: head.version),
+);
+client.listen((bytes) => upstream.add(rewriter.add(bytes)));
+```
+
+Every keep-alive request is rewritten (bodies are framed by `Content-Length` or
+chunked encoding and never touched); after a WebSocket upgrade, `CONNECT`, or
+anything that is not HTTP/1.x the stream passes through unchanged. Existing
+`X-Forwarded-*`/`Forwarded`/`Via` values are kept and this hop's is appended —
+trust only the right-most entry.
 
 **Authentication & authorization:**
 
