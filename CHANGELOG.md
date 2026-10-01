@@ -1,3 +1,28 @@
+## 1.9.2
+
+### Fixed
+
+- **`204` and `304` responses no longer claim `Content-Type: text/plain`.**
+  `dart:io` pre-sets `Content-Type: text/plain; charset=utf-8` on every response
+  (dart-lang/sdk#64442), and shelf only ever adds headers. So every `204 No
+  Content` and `304 Not Modified` the hub sent carried that type, whether from a
+  `HubResponse` with no `Content-Type` or relayed by `ProxyService` from an
+  upstream that sent none. On a `304` this is harmful: caches in front of the
+  hub (browsers and proxies) merge a `304`'s fields into the stored response,
+  so a cached `text/html` page could be relabelled `text/plain`. The transport
+  now removes the default from `204`/`304` responses unless the handler set a
+  type itself. Every other response keeps the default as before.
+
+### Tests
+
+- `bodyless_response_headers_test.dart` checks the raw heads the hub sends. A
+  `304` and a `204` from a `HubResponse` without a type get no `Content-Type`.
+  An explicit type on a `304` is kept, and a `200` still gets the default. A
+  clean upstream `304` relayed by `ProxyService` gains none. The `304`, `204`
+  and `ProxyService` cases fail without the fix.
+
+---
+
 ## 1.9.1
 
 ### Fixed

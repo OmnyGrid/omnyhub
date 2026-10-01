@@ -93,13 +93,16 @@ class HttpTransport implements Transport {
       if (sni != null && sni.supportsSni) {
         await _bindSni(sni, port);
       } else {
-        _server = await shelf_io.serve(
-          _handle,
-          address,
-          port,
-          securityContext: _secure ? provider!.securityContext() : null,
-          shared: true,
-        );
+        final server = _secure
+            ? await HttpServer.bindSecure(
+                address,
+                port,
+                provider!.securityContext(),
+                shared: true,
+              )
+            : await HttpServer.bind(address, port, shared: true);
+        _serveRequests(server);
+        _server = server;
       }
     } on TransportException {
       rethrow;
@@ -122,7 +125,7 @@ class HttpTransport implements Transport {
       securityContextResolver: provider.contextFor,
     );
     final httpServer = sniServer.asHttpServer();
-    shelf_io.serveRequests(httpServer, _handle);
+    _serveRequests(httpServer);
     _sniServer = sniServer;
     _server = httpServer;
   }
@@ -153,6 +156,30 @@ class HttpTransport implements Transport {
     _sniServer = null;
     if (server != null) await server.close(force: force);
     if (sniServer != null) await sniServer.close();
+  }
+
+  /// Serves [requests] through shelf, like `shelf_io.serveRequests`, with one
+  /// correction to `dart:io`'s defaults.
+  ///
+  /// `dart:io` pre-sets `Content-Type: text/plain; charset=utf-8` on every
+  /// response (dart-lang/sdk#64442), and shelf only ever adds headers. A
+  /// `204 No Content` or `304 Not Modified` has no content, so that default is
+  /// removed unless the handler set a type itself. On a `304` it is actively
+  /// harmful: caches merge a `304`'s fields into the stored response, so a
+  /// relayed `304` labelled `text/plain` would relabel a cached `text/html`
+  /// page.
+  void _serveRequests(Stream<HttpRequest> requests) {
+    requests.listen(
+      (io) => shelf_io.handleRequest(io, (request) async {
+        final response = await _handle(request);
+        final status = response.statusCode;
+        if ((status == 204 || status == 304) &&
+            !response.headers.containsKey(HttpHeaders.contentTypeHeader)) {
+          io.response.headers.removeAll(HttpHeaders.contentTypeHeader);
+        }
+        return response;
+      }),
+    );
   }
 
   Future<shelf.Response> _handle(shelf.Request request) async {
