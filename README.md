@@ -72,7 +72,9 @@ See the full API docs at [pub.dev/documentation/omnyhub][api_doc].
   local or remote upstreams. Host- and path-based gateways and hybrid deployments
   are the same mechanism. For byte-level relays (TCP tunnels) that never parse
   a request, `HttpRequestHeaderRewriter` + `ForwardedHeaders` add the
-  forwarding headers to every request on a raw HTTP/1.x stream.
+  forwarding headers to every request on a raw HTTP/1.x stream, and
+  `HttpRelay` adds an RFC 9111 in-memory cache (`HttpCache`, with a shared
+  `HttpCacheBudget`) plus reverse-proxy timeouts (`504`/`502`/`408`).
 - **Automatic TLS.** Static certificates or automatic Let's Encrypt (ACME
   HTTP-01) provisioning and renewal with hot-reload, behind a single
   `TlsProvider` port — including **dynamic, on-demand multi-domain** issuance via
@@ -131,7 +133,8 @@ lib/
     ├── routing/    # RouteContext, RouteRule (+ built-ins), Route, Router, RuleRouter
     ├── auth/       # Authenticator, Authorizer + built-ins
     ├── service/    # Service port, HandlerService, ServiceRegistry
-    ├── proxy/      # Upstream, ProxyService (HTTP + WS forwarding), ForwardedHeaders, HttpRequestHeaderRewriter
+    ├── proxy/      # Upstream, ProxyService (HTTP + WS forwarding), ForwardedHeaders, HttpRequestHeaderRewriter,
+    │               #   HttpStreamParser, HttpRelay; cache/: HttpCache, HttpCacheBudget, CacheControl
     ├── node/       # control protocol + codec, registry, discovery, heartbeat, gateway, runtime
     ├── hub/        # OmnyHub facade, pipeline, middleware
     ├── cli/        # gateway config builder
@@ -224,6 +227,39 @@ chunked encoding and never touched); after a WebSocket upgrade, `CONNECT`, or
 anything that is not HTTP/1.x the stream passes through unchanged. Existing
 `X-Forwarded-*`/`Forwarded`/`Via` values are kept and this hop's is appended —
 trust only the right-most entry.
+
+**Caching and timeouts on a raw byte stream** — `HttpRelay` parses both
+directions of one connection:
+
+```dart
+final budget = HttpCacheBudget(128 * 1024 * 1024); // shared by every cache
+final cache = HttpCache(
+  const HttpCacheOptions(maxBytes: 32 * 1024 * 1024, cachePrivate: false),
+  budget: budget,
+);
+final relay = HttpRelay(
+  cache: cache, // or null: timeouts only
+  timeouts: const HttpRelayTimeouts(), // 60s header / 5m idle / 60s client
+  toUpstream: upstream.add,
+  toClient: client.add,
+  closeConnection: () => client.destroy(),
+);
+client.listen(relay.addFromClient, onDone: relay.dispose);
+upstream.listen(relay.addFromUpstream, onDone: relay.closeUpstream);
+```
+
+What the cache does:
+- It stores what RFC 9111 lets a shared cache store, and nothing marked
+  `private` unless `cachePrivate` is set.
+- It never stores a response that sets a cookie, and never answers a request
+  that carries `Authorization`.
+- It answers hits itself and revalidates stale entries with the entry's
+  validators.
+- It keeps responses in request order, and marks each with `X-Cache` and `Age`.
+
+When the origin stays silent past the response-header timeout, the client gets
+`504` and the connection closes. A `stale-if-error` entry is served instead
+when one is allowed.
 
 **Authentication & authorization:**
 

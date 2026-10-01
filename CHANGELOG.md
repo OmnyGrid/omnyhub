@@ -1,3 +1,81 @@
+## 1.9.0
+
+A byte-level relay carrying HTTP can now cache responses and enforce timeouts,
+the way a reverse proxy does, without ever parsing a request into a framework
+object.
+
+Additive and backward-compatible. `HttpRequestHeaderRewriter` behaves exactly as
+before (it is now built on the new parser).
+
+### Added
+
+- **`HttpStreamParser`** — an incremental HTTP/1.x parser for either direction
+  (`.requests()` / `.responses()`). It emits head, body, end, gap and
+  pass-through events that each carry their raw wire bytes, so a relay can
+  forward a stream unchanged or replace just a head.
+  - Bodies are framed by chunked encoding (extensions and trailers included),
+    by `Content-Length`, or, for responses, by the connection closing
+    (`close()`).
+  - A response parser is told each request's method (`expectResponseTo`): a
+    `HEAD`, `204` or `304` response has no body, interim `1xx` responses don't
+    answer the request, and a `101` or a successful `CONNECT` switches to
+    pass-through.
+  - Helpers: `headerValue`, `headerTokens`, `encodeHttpRequestHead`,
+    `encodeHttpResponseHead` and the `HttpResponseHead` record.
+- **`HttpCache`** — an in-memory, least-recently-used, shared HTTP cache
+  following RFC 9111, configured by `HttpCacheOptions` (`maxBytes`,
+  `maxEntryBytes`, `cachePrivate`, `defaultTtl`).
+  - **What it stores:** `GET` responses with status 200, 203, 204, 301, 308,
+    404 or 410 whose length is known. Freshness comes from `s-maxage`, then
+    `max-age`, then `Expires`, then the optional default TTL; a zero lifetime
+    is stored only with a validator.
+  - **What it never stores:** `no-store`, `private` (unless `cachePrivate`),
+    responses with `Set-Cookie`, and `Vary: *`.
+  - **What bypasses it:** requests with `Authorization`, `Range`, a body or an
+    upgrade, and HTTP/1.0.
+  - Each `Vary` variant is stored separately.
+  - The request's `no-cache`, `max-age`, `min-fresh`, `max-stale`,
+    `only-if-cached` and `Pragma: no-cache` are honoured, and
+    `must-revalidate` is respected.
+  - A `304` refreshes an entry (`refresh`). `canServeStaleOnError` implements
+    RFC 5861 `stale-if-error`.
+- **`HttpCacheBudget`** — a memory budget shared by several caches. When their
+  total exceeds it, the least recently used entry across all of them is
+  evicted.
+- **`HttpRelay`** — a relay for one client connection over raw bytes, with an
+  optional `HttpCache` and `HttpRelayTimeouts`.
+  - **Cache outcomes:** a hit is answered locally, a stale entry is revalidated
+    with `If-None-Match` / `If-Modified-Since`, and a miss is captured while it
+    streams through and stored when complete. A successful unsafe request
+    invalidates its target and its `Location` / `Content-Location`. Responses
+    carry `X-Cache: HIT | MISS | REVALIDATED | BYPASS | STALE` and `Age`.
+  - **Order:** responses stay in request order on keep-alive connections, even
+    when a hit is ready before an earlier miss has finished.
+  - **Timeouts** (defaults 60s / 5m / 60s / off):
+    - no response head in time → `504`;
+    - origin closed before responding → `502`;
+    - a stall between bytes, or the total deadline passed after the response
+      started → close;
+    - a client that doesn't finish its request head → `408`.
+    
+    A `stale-if-error` entry replaces a `502`/`504`. After any failure the
+    connection closes, so a late response can never answer the wrong request.
+- **`CacheControl`**, `freshnessLifetime`, `parseHttpDate`, `formatHttpDate`,
+  `hasValidator` and `cacheableStatuses`.
+
+### Tests
+
+- New unit tests for the parser, Cache-Control, the cache (including the shared
+  budget and `Vary`) and the relay (caching, ordering, invalidation and every
+  timeout, driven by fake timers). Line coverage is 100% for the parser, cache
+  and Cache-Control, and 99% for the relay; the one uncovered line is a
+  defensive branch.
+- A new integration test runs a real `HttpClient` → `HttpRelay` → `HttpServer`:
+  hits, a `304` answered from the cache, `Vary`, a real `504` timeout, and
+  pipelined order.
+
+---
+
 ## 1.8.0
 
 Forwarding headers for relays that never parse a request: a byte-level TCP
