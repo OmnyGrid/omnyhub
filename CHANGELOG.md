@@ -1,3 +1,27 @@
+## 1.9.3
+
+### Changed
+
+- Dependencies: `shelf: ^1.4.3`, `shelf_letsencrypt: ^2.0.8`; dev:
+  `dependency_validator: ^5.1.0`, `shelf_router: ^1.1.5`, `test: ^1.33.0`.
+
+### Fixed
+
+- **A client that disconnects early is no longer a handler error.** Since
+  shelf 1.4.3 the connection info is read from the socket lazily and throws a
+  `StateError` if the client has already gone. The transport read it to fill
+  `HubRequest.remoteAddress`, outside its error handling, so the request would
+  have failed in shelf as "Error thrown by handler". The address is now `null`
+  in that case, as it already is when no connection info is available.
+
+### Tests
+
+- `http_transport_test.dart` checks the remote address read from the
+  connection info, and that it is `null` without connection info and after a
+  disconnect.
+
+---
+
 ## 1.9.2
 
 ### Fixed
