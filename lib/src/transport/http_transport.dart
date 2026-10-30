@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:meta/meta.dart';
 import 'package:multi_domain_secure_server/multi_domain_secure_server.dart';
 import 'package:shelf/shelf.dart' as shelf;
 import 'package:shelf/shelf_io.dart' as shelf_io;
@@ -225,7 +226,7 @@ class HttpTransport implements Transport {
       uri: request.requestedUri,
       protocol: protocol,
       headers: request.headers,
-      remoteAddress: _remoteAddress(request),
+      remoteAddress: remoteAddressOf(request),
       body: upgrade ? null : request.read(),
     );
   }
@@ -253,9 +254,19 @@ class HttpTransport implements Transport {
     return upgrade == 'websocket' && (connection?.contains('upgrade') ?? false);
   }
 
-  static String? _remoteAddress(shelf.Request request) {
+  /// The client's address, or `null` if it is unknown.
+  ///
+  /// Since shelf 1.4.3 the connection info is read from the socket lazily, on
+  /// first access, and throws a [StateError] if the client has already
+  /// disconnected. That is an unknown address, not a handler failure.
+  @visibleForTesting
+  static String? remoteAddressOf(shelf.Request request) {
     final info = request.context['shelf.io.connection_info'];
-    if (info is HttpConnectionInfo) return info.remoteAddress.address;
-    return null;
+    if (info is! HttpConnectionInfo) return null;
+    try {
+      return info.remoteAddress.address;
+    } on StateError {
+      return null;
+    }
   }
 }
