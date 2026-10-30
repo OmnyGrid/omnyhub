@@ -16,7 +16,7 @@ dependencies:
   multi_domain_secure_server: ^1.0.17
   path: ^1.9.1
   shelf: ^1.4.3
-  shelf_letsencrypt: ^2.0.7
+  shelf_letsencrypt: ^2.0.8
   shelf_web_socket: ^3.0.0
   web_socket_channel: ^3.0.3
 

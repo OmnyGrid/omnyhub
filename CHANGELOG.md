@@ -2,7 +2,7 @@
 
 ### Changed
 
-- Dependencies: `shelf: ^1.4.3`, `shelf_letsencrypt: ^2.0.7`; dev:
+- Dependencies: `shelf: ^1.4.3`, `shelf_letsencrypt: ^2.0.8`; dev:
   `dependency_validator: ^5.1.0`, `shelf_router: ^1.1.5`, `test: ^1.33.0`.
 
 ### Fixed
